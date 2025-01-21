@@ -41,7 +41,7 @@ def test_create_change_set_without_parameters(
     try:
         # make sure the change set wasn't executed (which would create a topic)
         topics = aws_client.sns.list_topics()
-        topic_arns = list(map(lambda x: x["TopicArn"], topics["Topics"]))
+        topic_arns = [x["TopicArn"] for x in topics["Topics"]]
         assert not any("sns-topic-simple" in arn for arn in topic_arns)
         # stack is initially in REVIEW_IN_PROGRESS state. only after executing the change_set will it change its status
         stack_response = aws_client.cloudformation.describe_stacks(StackName=stack_id)
@@ -73,7 +73,7 @@ def test_create_change_set_without_parameters(
 
 
 # TODO: implement
-@pytest.mark.xfail(condition=not is_aws_cloud(), reason="Not properly implemented")
+@pytest.mark.skipif(condition=not is_aws_cloud(), reason="Not properly implemented")
 @markers.aws.validated
 def test_create_change_set_update_without_parameters(
     cleanup_stacks,
@@ -328,7 +328,7 @@ def test_create_change_set_with_ssm_parameter(
         wait_until(is_stack_created(stack_id))
 
         topics = aws_client.sns.list_topics()
-        topic_arns = list(map(lambda x: x["TopicArn"], topics["Topics"]))
+        topic_arns = [x["TopicArn"] for x in topics["Topics"]]
         assert any((parameter_value in t) for t in topic_arns)
     finally:
         cleanup_changesets([change_set_id])
@@ -383,7 +383,7 @@ def test_execute_change_set(
         assert wait_until(is_change_set_finished(change_set_id))
         # check if stack resource was created
         topics = aws_client.sns.list_topics()
-        topic_arns = list(map(lambda x: x["TopicArn"], topics["Topics"]))
+        topic_arns = [x["TopicArn"] for x in topics["Topics"]]
         assert any(("sns-topic-simple" in t) for t in topic_arns)
 
         # new change set name
@@ -429,6 +429,50 @@ def test_delete_change_set_exception(snapshot, aws_client):
     with pytest.raises(Exception) as e2:
         aws_client.cloudformation.delete_change_set(ChangeSetName="DoesNotExist")
     snapshot.match("e2", e2)
+
+
+@markers.aws.validated
+def test_create_delete_create(aws_client, cleanups, deploy_cfn_template):
+    """test the re-use of a changeset name with a re-used stack name"""
+    stack_name = f"stack-{short_uid()}"
+    change_set_name = f"cs-{short_uid()}"
+
+    template_path = os.path.join(
+        os.path.dirname(__file__), "../../../templates/sns_topic_simple.yaml"
+    )
+    with open(template_path) as infile:
+        template = infile.read()
+
+    # custom cloudformation deploy process since our `deploy_cfn_template` is too smart and uses IDs, unlike the CDK
+    def deploy():
+        client = aws_client.cloudformation
+        client.create_change_set(
+            StackName=stack_name,
+            TemplateBody=template,
+            ChangeSetName=change_set_name,
+            ChangeSetType="CREATE",
+        )
+        client.get_waiter("change_set_create_complete").wait(
+            StackName=stack_name, ChangeSetName=change_set_name
+        )
+
+        client.execute_change_set(StackName=stack_name, ChangeSetName=change_set_name)
+        client.get_waiter("stack_create_complete").wait(
+            StackName=stack_name,
+        )
+
+    def delete(suppress_exception: bool = False):
+        try:
+            aws_client.cloudformation.delete_stack(StackName=stack_name)
+            aws_client.cloudformation.get_waiter("stack_delete_complete").wait(StackName=stack_name)
+        except Exception:
+            if not suppress_exception:
+                raise
+
+    deploy()
+    cleanups.append(lambda: delete(suppress_exception=True))
+    delete()
+    deploy()
 
 
 @markers.aws.validated
@@ -995,3 +1039,39 @@ def test_name_conflicts(aws_client, snapshot, cleanups):
         ChangeSetName=second_initial_changeset_id
     )
     snapshot.match("second_initial_changeset_id_desc", second_initial_changeset_id_desc)
+
+
+@markers.aws.validated
+def test_describe_change_set_with_similarly_named_stacks(deploy_cfn_template, aws_client):
+    stack_name = f"stack-{short_uid()}"
+    change_set_name = f"change-set-{short_uid()}"
+
+    # create a changeset
+    template_path = os.path.join(os.path.dirname(__file__), "../../../templates/ec2_keypair.yml")
+    template_body = load_template_raw(template_path)
+    aws_client.cloudformation.create_change_set(
+        StackName=stack_name,
+        ChangeSetName=change_set_name,
+        TemplateBody=template_body,
+        ChangeSetType="CREATE",
+    )
+
+    # delete the stack
+    aws_client.cloudformation.delete_stack(StackName=stack_name)
+    aws_client.cloudformation.get_waiter("stack_delete_complete").wait(StackName=stack_name)
+
+    # create a new changeset with the same name
+    response = aws_client.cloudformation.create_change_set(
+        StackName=stack_name,
+        ChangeSetName=change_set_name,
+        TemplateBody=template_body,
+        ChangeSetType="CREATE",
+    )
+
+    # ensure that the correct changeset is returned when requested by stack name
+    assert (
+        aws_client.cloudformation.describe_change_set(
+            ChangeSetName=response["Id"], StackName=stack_name
+        )["ChangeSetId"]
+        == response["Id"]
+    )

@@ -4,19 +4,19 @@ import threading
 import pytest
 
 from localstack.testing.pytest import markers
+from localstack.testing.pytest.stepfunctions.utils import (
+    create_and_record_execution,
+)
 from localstack.utils.strings import short_uid
 from localstack.utils.sync import retry
 from tests.aws.services.stepfunctions.templates.services.services_templates import (
     ServicesTemplates as ST,
 )
-from tests.aws.services.stepfunctions.utils import create_and_record_execution
 from tests.aws.test_notifications import PUBLICATION_RETRIES, PUBLICATION_TIMEOUT
 
 
 @markers.snapshot.skip_snapshot_verify(
     paths=[
-        "$..loggingConfiguration",
-        "$..tracingConfiguration",
         # TODO: add support for Sdk Http metadata.
         "$..SdkHttpMetadata",
         "$..SdkResponseMetadata",
@@ -46,14 +46,14 @@ class TestTaskServiceSns:
     def test_fifo_message_attribute(
         self,
         aws_client,
-        create_iam_role_for_sfn,
+        create_state_machine_iam_role,
         create_state_machine,
         input_params,
         fail_template,
         sns_create_topic,
         sfn_snapshot,
     ):
-        sfn_snapshot.add_transformer(sfn_snapshot.transform.sqs_api())
+        sfn_snapshot.add_transformer(sfn_snapshot.transform.sfn_sqs_integration())
         fifo_topic_name = f"topic-{short_uid()}.fifo"
         sns_topic = sns_create_topic(Name=fifo_topic_name, Attributes={"FifoTopic": "true"})
         topic_arn = sns_topic["TopicArn"]
@@ -67,8 +67,8 @@ class TestTaskServiceSns:
 
         exec_input = json.dumps(input_params)
         create_and_record_execution(
-            aws_client.stepfunctions,
-            create_iam_role_for_sfn,
+            aws_client,
+            create_state_machine_iam_role,
             create_state_machine,
             sfn_snapshot,
             definition,
@@ -82,13 +82,13 @@ class TestTaskServiceSns:
     def test_publish_base(
         self,
         aws_client,
-        create_iam_role_for_sfn,
+        create_state_machine_iam_role,
         create_state_machine,
         sns_create_topic,
         sfn_snapshot,
         message,
     ):
-        sfn_snapshot.add_transformer(sfn_snapshot.transform.sqs_api())
+        sfn_snapshot.add_transformer(sfn_snapshot.transform.sfn_sqs_integration())
 
         sns_topic = sns_create_topic()
         topic_arn = sns_topic["TopicArn"]
@@ -98,8 +98,8 @@ class TestTaskServiceSns:
 
         exec_input = json.dumps({"TopicArn": topic_arn, "Message": {"Message": "HelloWorld!"}})
         create_and_record_execution(
-            aws_client.stepfunctions,
-            create_iam_role_for_sfn,
+            aws_client,
+            create_state_machine_iam_role,
             create_state_machine,
             sfn_snapshot,
             definition,
@@ -113,7 +113,7 @@ class TestTaskServiceSns:
     def test_publish_message_attributes(
         self,
         aws_client,
-        create_iam_role_for_sfn,
+        create_state_machine_iam_role,
         create_state_machine,
         sqs_create_queue,
         sqs_receive_num_messages,
@@ -123,7 +123,7 @@ class TestTaskServiceSns:
         message_value,
     ):
         sfn_snapshot.add_transformer(sfn_snapshot.transform.sns_api())
-        sfn_snapshot.add_transformer(sfn_snapshot.transform.sqs_api())
+        sfn_snapshot.add_transformer(sfn_snapshot.transform.sfn_sqs_integration())
 
         topic_info = sns_create_topic()
         topic_arn = topic_info["TopicArn"]
@@ -162,8 +162,8 @@ class TestTaskServiceSns:
             }
         )
         create_and_record_execution(
-            aws_client.stepfunctions,
-            create_iam_role_for_sfn,
+            aws_client,
+            create_state_machine_iam_role,
             create_state_machine,
             sfn_snapshot,
             definition,
@@ -176,12 +176,12 @@ class TestTaskServiceSns:
     def test_publish_base_error_topic_arn(
         self,
         aws_client,
-        create_iam_role_for_sfn,
+        create_state_machine_iam_role,
         create_state_machine,
         sns_create_topic,
         sfn_snapshot,
     ):
-        sfn_snapshot.add_transformer(sfn_snapshot.transform.sqs_api())
+        sfn_snapshot.add_transformer(sfn_snapshot.transform.sfn_sqs_integration())
 
         sns_topic = sns_create_topic()
         topic_arn = sns_topic["TopicArn"]
@@ -192,8 +192,8 @@ class TestTaskServiceSns:
 
         exec_input = json.dumps({"TopicArn": topic_arn, "Message": {"Message": "HelloWorld!"}})
         create_and_record_execution(
-            aws_client.stepfunctions,
-            create_iam_role_for_sfn,
+            aws_client,
+            create_state_machine_iam_role,
             create_state_machine,
             sfn_snapshot,
             definition,

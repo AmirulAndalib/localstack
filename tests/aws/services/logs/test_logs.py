@@ -4,13 +4,16 @@ import json
 import re
 
 import pytest
+from localstack_snapshot.pytest.snapshot import is_aws
+from localstack_snapshot.snapshots.transformer import KeyValueBasedTransformer
 
 from localstack.aws.api.lambda_ import Runtime
-from localstack.constants import APPLICATION_AMZ_JSON_1_1, TEST_AWS_REGION_NAME
+from localstack.constants import APPLICATION_AMZ_JSON_1_1
+from localstack.testing.config import TEST_AWS_REGION_NAME
 from localstack.testing.pytest import markers
-from localstack.testing.snapshots.transformer import KeyValueBasedTransformer
 from localstack.utils import testutil
 from localstack.utils.aws import arns
+from localstack.utils.aws.arns import get_partition
 from localstack.utils.common import now_utc, poll_condition, retry, short_uid
 from tests.aws.services.lambda_.test_lambda import TEST_LAMBDA_PYTHON_ECHO
 
@@ -62,7 +65,7 @@ def logs_log_stream(logs_log_group, aws_client):
 
 class TestCloudWatchLogs:
     # TODO make creation and description atomic to avoid possible flake?
-    @markers.aws.unknown
+    @markers.aws.validated
     def test_create_and_delete_log_group(self, aws_client):
         test_name = f"test-log-group-{short_uid()}"
         log_groups_before = aws_client.logs.describe_log_groups(
@@ -87,6 +90,25 @@ class TestCloudWatchLogs:
             lambda: len(log_groups_after) == len(log_groups_between) - 1, timeout=5.0, interval=0.5
         )
         assert len(log_groups_after) == len(log_groups_before)
+
+    @markers.aws.validated
+    def test_resource_does_not_exist(self, aws_client, snapshot, cleanups):
+        log_group_name = f"log-group-{short_uid()}"
+        log_stream_name = f"log-stream-{short_uid()}"
+        with pytest.raises(Exception) as ctx:
+            aws_client.logs.get_log_events(
+                logGroupName=log_group_name, logStreamName=log_stream_name
+            )
+        snapshot.match("error-log-group-does-not-exist", ctx.value.response)
+
+        aws_client.logs.create_log_group(logGroupName=log_group_name)
+        cleanups.append(lambda: aws_client.logs.delete_log_group(logGroupName=log_group_name))
+
+        with pytest.raises(Exception) as ctx:
+            aws_client.logs.get_log_events(
+                logGroupName=log_group_name, logStreamName=log_stream_name
+            )
+        snapshot.match("error-log-stream-does-not-exist", ctx.value.response)
 
     @markers.aws.validated
     def test_list_tags_log_group(self, snapshot, aws_client):
@@ -150,7 +172,7 @@ class TestCloudWatchLogs:
         ]
     )
     @markers.aws.validated
-    def test_create_and_delete_log_stream(self, logs_log_group, aws_client, snapshot):
+    def test_create_and_delete_log_stream(self, logs_log_group, aws_client, region_name, snapshot):
         snapshot.add_transformer(snapshot.transform.logs_api())
         test_name = f"test-log-stream-{short_uid()}"
 
@@ -206,7 +228,7 @@ class TestCloudWatchLogs:
             logGroupIdentifier=arns.log_group_arn(
                 logs_log_group,
                 account_id=aws_client.sts.get_caller_identity()["Account"],
-                region_name=TEST_AWS_REGION_NAME,
+                region_name=region_name,
             )
         ).get("logStreams")
         snapshot.match("log_group_identifier-arn", response)
@@ -218,7 +240,7 @@ class TestCloudWatchLogs:
         )
         assert len(log_streams_after) == 0
 
-    @markers.aws.unknown
+    @markers.aws.validated
     def test_put_events_multi_bytes_msg(self, logs_log_group, logs_log_stream, aws_client):
         body_msg = "🙀 - 参よ - 日本語"
         events = [{"timestamp": now_utc(millis=True), "message": body_msg}]
@@ -227,12 +249,20 @@ class TestCloudWatchLogs:
         )
         assert response["ResponseMetadata"]["HTTPStatusCode"] == 200
 
-        events = aws_client.logs.get_log_events(
-            logGroupName=logs_log_group, logStreamName=logs_log_stream
-        )["events"]
-        assert events[0]["message"] == body_msg
+        def get_log_events():
+            events = aws_client.logs.get_log_events(
+                logGroupName=logs_log_group, logStreamName=logs_log_stream
+            )["events"]
+            assert events[0]["message"] == body_msg
 
-    @markers.aws.unknown
+        retry(
+            get_log_events,
+            retries=20 if is_aws() else 3,
+            sleep=5 if is_aws() else 1,
+            sleep_before=3 if is_aws() else 0,
+        )
+
+    @markers.aws.validated
     def test_filter_log_events_response_header(self, logs_log_group, logs_log_stream, aws_client):
         events = [
             {"timestamp": now_utc(millis=True), "message": "log message 1"},
@@ -257,7 +287,13 @@ class TestCloudWatchLogs:
         ]
     )
     def test_put_subscription_filter_lambda(
-        self, logs_log_group, logs_log_stream, create_lambda_function, snapshot, aws_client
+        self,
+        logs_log_group,
+        logs_log_stream,
+        create_lambda_function,
+        snapshot,
+        aws_client,
+        region_name,
     ):
         snapshot.add_transformer(snapshot.transform.lambda_api())
         # special replacements for this test case:
@@ -279,7 +315,7 @@ class TestCloudWatchLogs:
         func_arn = create_lambda_function(
             handler_file=TEST_LAMBDA_PYTHON_ECHO,
             func_name=test_lambda_name,
-            runtime=Runtime.python3_9,
+            runtime=Runtime.python3_12,
         )["CreateFunctionResponse"]["FunctionArn"]
         aws_client.lambda_.invoke(FunctionName=test_lambda_name, Payload=b"{}")
         # get account-id to set the correct policy
@@ -287,9 +323,9 @@ class TestCloudWatchLogs:
         result = aws_client.lambda_.add_permission(
             FunctionName=test_lambda_name,
             StatementId=test_lambda_name,
-            Principal=f"logs.{TEST_AWS_REGION_NAME}.amazonaws.com",
+            Principal=f"logs.{region_name}.amazonaws.com",
             Action="lambda:InvokeFunction",
-            SourceArn=f"arn:aws:logs:{TEST_AWS_REGION_NAME}:{account_id}:log-group:{logs_log_group}:*",
+            SourceArn=f"arn:{get_partition(region_name)}:logs:{region_name}:{account_id}:log-group:{logs_log_group}:*",
             SourceAccount=account_id,
         )
 
@@ -518,8 +554,8 @@ class TestCloudWatchLogs:
                 logGroupName=logs_log_group, filterName=filter_name
             )
 
-    @pytest.mark.skip("TODO: failing against pro")
-    @markers.aws.unknown
+    @pytest.mark.skip("TODO: failing against community - filters are only in pro -> move test?")
+    @markers.aws.validated
     def test_metric_filters(self, logs_log_group, logs_log_stream, aws_client):
         basic_filter_name = f"test-filter-basic-{short_uid()}"
         json_filter_name = f"test-filter-json-{short_uid()}"
@@ -569,8 +605,16 @@ class TestCloudWatchLogs:
         )
 
         # list metrics
-        response = aws_client.cloudwatch.list_metrics(Namespace=namespace_name)
-        assert len(response["Metrics"]) == 2
+        def list_metrics():
+            res = aws_client.cloudwatch.list_metrics(Namespace=namespace_name)
+            assert len(res["Metrics"]) == 2
+
+        retry(
+            list_metrics,
+            retries=20 if is_aws() else 3,
+            sleep=5 if is_aws() else 1,
+            sleep_before=3 if is_aws() else 0,
+        )
 
         # delete filters
         aws_client.logs.delete_metric_filter(
@@ -588,7 +632,7 @@ class TestCloudWatchLogs:
         assert basic_filter_name not in filter_names
         assert json_filter_name not in filter_names
 
-    @markers.aws.unknown
+    @markers.aws.needs_fixing
     def test_delivery_logs_for_sns(self, sns_create_topic, sns_subscription, aws_client):
         topic_name = f"test-logs-{short_uid()}"
         contact = "+10123456789"
@@ -601,7 +645,14 @@ class TestCloudWatchLogs:
         logs_group_name = topic_arn.replace("arn:aws:", "").replace(":", "/")
 
         def log_group_exists():
+            # TODO on AWS the log group is not created, probably need iam role
+            # see also https://repost.aws/knowledge-center/monitor-sns-texts-cloudwatch
             response = aws_client.logs.describe_log_streams(logGroupName=logs_group_name)
             assert response["ResponseMetadata"]["HTTPStatusCode"] == 200
 
-        retry(log_group_exists)
+        retry(
+            log_group_exists,
+            retries=20 if is_aws() else 3,
+            sleep=5 if is_aws() else 1,
+            sleep_before=3 if is_aws() else 0,
+        )

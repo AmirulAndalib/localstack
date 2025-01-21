@@ -1,6 +1,9 @@
 import pytest
+from botocore.config import Config
 
+from localstack import config
 from localstack.constants import APPLICATION_JSON
+from localstack.testing.aws.util import is_aws_cloud
 from localstack.utils.strings import short_uid
 from tests.aws.services.apigateway.apigateway_fixtures import (
     create_rest_api_deployment,
@@ -13,6 +16,7 @@ from tests.aws.services.apigateway.apigateway_fixtures import (
     delete_rest_api,
     import_rest_api,
 )
+from tests.aws.services.lambda_.test_lambda import TEST_LAMBDA_PYTHON_ECHO_STATUS_CODE
 
 # default name used for created REST API stages
 DEFAULT_STAGE_NAME = "dev"
@@ -63,16 +67,24 @@ APIGATEWAY_ASSUME_ROLE_POLICY = {
 }
 
 
+def is_next_gen_api():
+    return config.APIGW_NEXT_GEN_PROVIDER and not is_aws_cloud()
+
+
 @pytest.fixture
 def create_rest_api_with_integration(
     create_rest_apigw, wait_for_stream_ready, create_iam_role_with_policy, aws_client
 ):
     def _factory(
         integration_uri,
+        path_part="test",
+        req_parameters=None,
         req_templates=None,
         res_templates=None,
         integration_type=None,
         stage=DEFAULT_STAGE_NAME,
+        resource_method: str = "POST",
+        integration_method: str = "POST",
     ):
         name = f"test-apigw-{short_uid()}"
         api_id, name, root_id = create_rest_apigw(
@@ -80,16 +92,20 @@ def create_rest_api_with_integration(
         )
 
         resource_id, _ = create_rest_resource(
-            aws_client.apigateway, restApiId=api_id, parentId=root_id, pathPart="test"
+            aws_client.apigateway, restApiId=api_id, parentId=root_id, pathPart=path_part
         )
+
+        if req_parameters is None:
+            req_parameters = {}
 
         method, _ = create_rest_resource_method(
             aws_client.apigateway,
             restApiId=api_id,
             resourceId=resource_id,
-            httpMethod="POST",
+            httpMethod=resource_method,
             authorizationType="NONE",
             apiKeyRequired=False,
+            requestParameters={value: True for value in req_parameters.values()},
         )
 
         # set AWS policy to give API GW access to backend resources
@@ -97,32 +113,37 @@ def create_rest_api_with_integration(
             policy = APIGATEWAY_DYNAMODB_POLICY
         elif ":kinesis:" in integration_uri:
             policy = APIGATEWAY_KINESIS_POLICY
+        elif integration_type in ("HTTP", "HTTP_PROXY"):
+            policy = None
         else:
             raise Exception(f"Unexpected integration URI: {integration_uri}")
-        assume_role_arn = create_iam_role_with_policy(
-            RoleName=f"role-apigw-{short_uid()}",
-            PolicyName=f"policy-apigw-{short_uid()}",
-            RoleDefinition=APIGATEWAY_ASSUME_ROLE_POLICY,
-            PolicyDefinition=policy,
-        )
+        assume_role_arn = ""
+        if policy:
+            assume_role_arn = create_iam_role_with_policy(
+                RoleName=f"role-apigw-{short_uid()}",
+                PolicyName=f"policy-apigw-{short_uid()}",
+                RoleDefinition=APIGATEWAY_ASSUME_ROLE_POLICY,
+                PolicyDefinition=policy,
+            )
 
         create_rest_api_integration(
             aws_client.apigateway,
             restApiId=api_id,
             resourceId=resource_id,
             httpMethod=method,
-            integrationHttpMethod="POST",
+            integrationHttpMethod=integration_method,
             type=integration_type or "AWS",
             credentials=assume_role_arn,
             uri=integration_uri,
             requestTemplates=req_templates or {},
+            requestParameters=req_parameters,
         )
 
         create_rest_api_method_response(
             aws_client.apigateway,
             restApiId=api_id,
             resourceId=resource_id,
-            httpMethod="POST",
+            httpMethod=resource_method,
             statusCode="200",
         )
 
@@ -131,7 +152,7 @@ def create_rest_api_with_integration(
             aws_client.apigateway,
             restApiId=api_id,
             resourceId=resource_id,
-            httpMethod="POST",
+            httpMethod=resource_method,
             statusCode="200",
             responseTemplates=res_templates,
         )
@@ -144,6 +165,31 @@ def create_rest_api_with_integration(
         return api_id
 
     yield _factory
+
+
+@pytest.fixture
+def create_status_code_echo_server(aws_client, create_lambda_function):
+    lambda_client = aws_client.lambda_
+
+    def _create_status_code_echo_server():
+        function_name = f"lambda_fn_echo_status_{short_uid()}"
+        create_lambda_function(
+            func_name=function_name,
+            handler_file=TEST_LAMBDA_PYTHON_ECHO_STATUS_CODE,
+        )
+        create_url_response = lambda_client.create_function_url_config(
+            FunctionName=function_name, AuthType="NONE", InvokeMode="BUFFERED"
+        )
+        aws_client.lambda_.add_permission(
+            FunctionName=function_name,
+            StatementId="urlPermission",
+            Action="lambda:InvokeFunctionUrl",
+            Principal="*",
+            FunctionUrlAuthType="NONE",
+        )
+        return create_url_response["FunctionUrl"]
+
+    return _create_status_code_echo_server
 
 
 @pytest.fixture
@@ -161,18 +207,32 @@ def apigw_redeploy_api(aws_client):
 
 
 @pytest.fixture
-def import_apigw(aws_client):
+def import_apigw(aws_client, aws_client_factory):
     rest_api_ids = []
 
+    if is_aws_cloud():
+        client_config = (
+            Config(
+                # Api gateway can throttle requests pretty heavily. Leading to potentially undeleted apis
+                retries={"max_attempts": 10, "mode": "adaptive"}
+            )
+            if is_aws_cloud()
+            else None
+        )
+
+        apigateway_client = aws_client_factory(config=client_config).apigateway
+    else:
+        apigateway_client = aws_client.apigateway
+
     def _import_apigateway_function(*args, **kwargs):
-        response, root_id = import_rest_api(aws_client.apigateway, **kwargs)
+        response, root_id = import_rest_api(apigateway_client, **kwargs)
         rest_api_ids.append(response.get("id"))
         return response, root_id
 
     yield _import_apigateway_function
 
     for rest_api_id in rest_api_ids:
-        delete_rest_api(aws_client.apigateway, restApiId=rest_api_id)
+        delete_rest_api(apigateway_client, restApiId=rest_api_id)
 
 
 @pytest.fixture

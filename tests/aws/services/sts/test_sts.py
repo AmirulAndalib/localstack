@@ -5,12 +5,14 @@ import pytest
 import requests
 
 from localstack import config
-from localstack.constants import APPLICATION_JSON, TEST_AWS_ACCESS_KEY_ID, TEST_AWS_REGION_NAME
+from localstack.constants import APPLICATION_JSON
 from localstack.testing.aws.util import create_client_with_keys
+from localstack.testing.config import TEST_AWS_ACCESS_KEY_ID
 from localstack.testing.pytest import markers
 from localstack.utils.aws.request_context import mock_aws_request_headers
 from localstack.utils.numbers import is_number
 from localstack.utils.strings import short_uid, to_str
+from localstack.utils.sync import retry
 
 TEST_SAML_ASSERTION = """
 <?xml version="1.0"?>
@@ -91,8 +93,53 @@ TEST_SAML_ASSERTION = """
 
 
 class TestSTSIntegrations:
-    @markers.aws.unknown
-    def test_assume_role(self, aws_client):
+    @markers.aws.validated
+    @markers.snapshot.skip_snapshot_verify(
+        paths=["$..PackedPolicySize"],
+    )
+    def test_assume_role(self, aws_client, create_role, account_id, snapshot):
+        snapshot.add_transformers_list(
+            [
+                snapshot.transform.resource_name(),
+                snapshot.transform.key_value("RoleId"),
+                snapshot.transform.key_value("AccessKeyId"),
+                snapshot.transform.key_value("SecretAccessKey"),
+                snapshot.transform.key_value("SessionToken"),
+            ]
+        )
+        snapshot.add_transformer(snapshot.transform.key_value("RoleSessionName"), priority=-1)
+
+        test_role_session_name = f"test-assume-role-{short_uid()}"
+        # we snapshot the test role session name with a transformer in order to validate its presence in the
+        # `AssumedRoleId` and Àrn` of the `AssumedRoleUser`
+        snapshot.match("role-session-name", {"RoleSessionName": test_role_session_name})
+        test_role_name = f"role-{short_uid()}"
+        assume_policy_doc = {
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Action": "sts:AssumeRole",
+                    "Principal": {"AWS": account_id},
+                    "Effect": "Allow",
+                }
+            ],
+        }
+        created_role = create_role(
+            RoleName=test_role_name, AssumeRolePolicyDocument=json.dumps(assume_policy_doc)
+        )
+        snapshot.match("create-role", created_role)
+
+        def assume_role():
+            assume_role_resp = aws_client.sts.assume_role(
+                RoleArn=created_role["Role"]["Arn"], RoleSessionName=test_role_session_name
+            )
+            return assume_role_resp
+
+        response = retry(assume_role, sleep=5, retries=4)
+        snapshot.match("assume-role", response)
+
+    @markers.aws.only_localstack
+    def test_assume_non_existent_role(self, aws_client):
         test_role_session_name = "s3-access-example"
         test_role_arn = "arn:aws:sts::000000000000:role/rd_role"
         response = aws_client.sts.assume_role(
@@ -105,7 +152,7 @@ class TestSTSIntegrations:
             assume_role_id_parts = response["AssumedRoleUser"]["AssumedRoleId"].split(":")
             assert assume_role_id_parts[1] == test_role_session_name
 
-    @markers.aws.unknown
+    @markers.aws.only_localstack
     def test_assume_role_with_web_identity(self, aws_client):
         test_role_session_name = "web_token"
         test_role_arn = "arn:aws:sts::000000000000:role/rd_role"
@@ -122,7 +169,7 @@ class TestSTSIntegrations:
             assume_role_id_parts = response["AssumedRoleUser"]["AssumedRoleId"].split(":")
             assert assume_role_id_parts[1] == test_role_session_name
 
-    @markers.aws.unknown
+    @markers.aws.only_localstack
     def test_assume_role_with_saml(self, aws_client):
         account_id = "000000000000"
         role_name = "test-role"
@@ -155,15 +202,23 @@ class TestSTSIntegrations:
             assume_role_id_parts = response["AssumedRoleUser"]["AssumedRoleId"].split(":")
             assert assume_role_id_parts[1] == fed_name
 
-    @markers.aws.unknown
-    def test_get_federation_token(self, aws_client):
-        token_name = "TestName"
-        response = aws_client.sts.get_federation_token(Name=token_name)
+    @markers.aws.validated
+    @markers.snapshot.skip_snapshot_verify(
+        paths=["$..PackedPolicySize"],
+    )
+    def test_get_federation_token(self, aws_client, snapshot):
+        snapshot.add_transformers_list(
+            [
+                snapshot.transform.resource_name(),
+                snapshot.transform.key_value("AccessKeyId"),
+                snapshot.transform.key_value("SecretAccessKey"),
+                snapshot.transform.key_value("SessionToken"),
+            ]
+        )
+        token_name = f"TestName{short_uid()}"
+        response = aws_client.sts.get_federation_token(Name=token_name, DurationSeconds=900)
+        snapshot.match("get-federation-token", response)
 
-        assert response["Credentials"]
-        assert response["Credentials"]["SecretAccessKey"]
-        assert response["Credentials"]["SessionToken"]
-        assert response["Credentials"]["Expiration"]
         federated_user_info = response["FederatedUser"]["FederatedUserId"].split(":")
         assert federated_user_info[1] == token_name
 
@@ -174,11 +229,13 @@ class TestSTSIntegrations:
         assert f"arn:aws:iam::{account_id}:root" == response["Arn"]
 
     @markers.aws.only_localstack
-    def test_expiration_date_format(self):
+    def test_expiration_date_format(self, region_name):
         url = config.internal_service_url()
         data = {"Action": "GetSessionToken", "Version": "2011-06-15"}
         headers = mock_aws_request_headers(
-            "sts", aws_access_key_id=TEST_AWS_ACCESS_KEY_ID, region_name=TEST_AWS_REGION_NAME
+            "sts",
+            aws_access_key_id=TEST_AWS_ACCESS_KEY_ID,
+            region_name=region_name,
         )
         headers["Accept"] = APPLICATION_JSON
         response = requests.post(url, data=data, headers=headers)
@@ -191,13 +248,13 @@ class TestSTSIntegrations:
     @markers.aws.only_localstack
     @pytest.mark.parametrize("use_aws_creds", [True, False])
     def test_get_caller_identity_user_access_key(
-        self, cleanups, use_aws_creds, monkeypatch, region
+        self, cleanups, use_aws_creds, monkeypatch, region_name
     ):
         """Check whether the correct account id is returned for requests by other users access keys"""
         monkeypatch.setattr(config, "PARITY_AWS_ACCESS_KEY_ID", use_aws_creds)
         account_id = "123123123123"
         account_creds = {"AccessKeyId": account_id, "SecretAccessKey": "test"}
-        iam_account_client = create_client_with_keys("iam", account_creds, region_name=region)
+        iam_account_client = create_client_with_keys("iam", account_creds, region_name=region_name)
         user = iam_account_client.create_user(UserName=f"test-user-{short_uid()}")["User"]
         user_name = user["UserName"]
         user_arn = user["Arn"]
@@ -209,7 +266,9 @@ class TestSTSIntegrations:
             )
         )
 
-        sts_user_client = create_client_with_keys("sts", access_key_response, region_name=region)
+        sts_user_client = create_client_with_keys(
+            "sts", access_key_response, region_name=region_name
+        )
         response = sts_user_client.get_caller_identity()
         assert account_id == response["Account"]
         assert user_arn == response["Arn"]
@@ -217,14 +276,14 @@ class TestSTSIntegrations:
     @markers.aws.only_localstack
     @pytest.mark.parametrize("use_aws_creds", [True, False])
     def test_get_caller_identity_role_access_key(
-        self, aws_client, account_id, cleanups, use_aws_creds, monkeypatch, region
+        self, aws_client, account_id, cleanups, use_aws_creds, monkeypatch, region_name
     ):
         """Check whether the correct account id is returned for roles for other accounts"""
         monkeypatch.setattr(config, "PARITY_AWS_ACCESS_KEY_ID", use_aws_creds)
         fake_account_id = "123123123123"
         account_creds = {"AccessKeyId": fake_account_id, "SecretAccessKey": "test"}
-        iam_account_client = create_client_with_keys("iam", account_creds, region_name=region)
-        sts_account_client = create_client_with_keys("sts", account_creds, region_name=region)
+        iam_account_client = create_client_with_keys("iam", account_creds, region_name=region_name)
+        sts_account_client = create_client_with_keys("sts", account_creds, region_name=region_name)
         assume_policy_doc = {
             "Version": "2012-10-17",
             "Statement": [
@@ -246,7 +305,7 @@ class TestSTSIntegrations:
             RoleArn=role_arn, RoleSessionName=f"test-session-{short_uid()}"
         )
         credentials = assume_role_response["Credentials"]
-        sts_role_client = create_client_with_keys("sts", credentials, region_name=region)
+        sts_role_client = create_client_with_keys("sts", credentials, region_name=region_name)
         response = sts_role_client.get_caller_identity()
         assert fake_account_id == response["Account"]
         assert assume_role_response["AssumedRoleUser"]["Arn"] == response["Arn"]
@@ -257,7 +316,7 @@ class TestSTSIntegrations:
         )
         credentials_other_account = assume_role_response_other_account["Credentials"]
         sts_role_client_2 = create_client_with_keys(
-            "sts", credentials_other_account, region_name=region
+            "sts", credentials_other_account, region_name=region_name
         )
         response = sts_role_client_2.get_caller_identity()
         assert fake_account_id == response["Account"]

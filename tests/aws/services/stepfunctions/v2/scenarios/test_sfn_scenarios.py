@@ -6,7 +6,6 @@ from typing import Any, TypedDict
 from localstack.aws.api.stepfunctions import ExecutionStatus
 from localstack.testing.pytest import markers
 from localstack.utils.sync import wait_until
-from tests.aws.services.stepfunctions.utils import is_legacy_provider, is_not_legacy_provider
 
 THIS_FOLDER = Path(os.path.dirname(__file__))
 
@@ -18,12 +17,7 @@ class RunConfig(TypedDict):
 
 
 @markers.snapshot.skip_snapshot_verify(
-    condition=is_legacy_provider, paths=["$..tracingConfiguration"]
-)
-@markers.snapshot.skip_snapshot_verify(
-    condition=is_not_legacy_provider,
     paths=[
-        "$..loggingConfiguration",
         "$..tracingConfiguration",
         "$..SdkHttpMetadata",
         "$..SdkResponseMetadata",
@@ -122,9 +116,9 @@ class TestFundamental:
             "$..taskFailedEventDetails.resourceType",
             "$..taskSubmittedEventDetails.output",
             "$..previousEventId",
+            "$..MessageId",
         ],
     )
-    @markers.snapshot.skip_snapshot_verify(condition=is_not_legacy_provider, paths=["$..MessageId"])
     @markers.aws.validated
     def test_wait_for_callback(self, deploy_cfn_template, sfn_snapshot, aws_client):
         """
@@ -175,10 +169,6 @@ class TestFundamental:
             )
 
     @markers.snapshot.skip_snapshot_verify(
-        condition=is_legacy_provider, paths=["$..Headers", "$..StatusText"]
-    )
-    @markers.snapshot.skip_snapshot_verify(
-        condition=is_not_legacy_provider,
         paths=["$..content-type"],  # FIXME: v2 includes extra content-type fields in Header fields.
     )
     @markers.aws.validated

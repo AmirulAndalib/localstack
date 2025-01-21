@@ -8,6 +8,7 @@ import dateutil.parser
 import pytest
 
 from localstack.aws.api.sns import InvalidParameterException
+from localstack.services.sns.filter import FilterPolicyValidator, SubscriptionFilter
 from localstack.services.sns.models import SnsMessage
 from localstack.services.sns.provider import (
     encode_subscription_token_with_region,
@@ -15,7 +16,6 @@ from localstack.services.sns.provider import (
     is_raw_message_delivery,
 )
 from localstack.services.sns.publisher import (
-    SubscriptionFilter,
     compute_canonical_string,
     create_sns_message_body,
 )
@@ -53,23 +53,23 @@ class TestSns:
         try:
             uuid.UUID(result.pop("MessageId"))
         except KeyError:
-            assert False, "MessageId missing in SNS response message body"
+            raise AssertionError("MessageId missing in SNS response message body")
         except ValueError:
-            assert False, "SNS response MessageId not a valid UUID"
+            raise AssertionError("SNS response MessageId not a valid UUID")
 
         try:
             dateutil.parser.parse(result.pop("Timestamp"))
         except KeyError:
-            assert False, "Timestamp missing in SNS response message body"
+            raise AssertionError("Timestamp missing in SNS response message body")
         except ValueError:
-            assert False, "SNS response Timestamp not a valid ISO 8601 date"
+            raise AssertionError("SNS response Timestamp not a valid ISO 8601 date")
 
         try:
             base64.b64decode(result.pop("Signature"))
         except KeyError:
-            assert False, "Signature missing in SNS response message body"
+            raise AssertionError("Signature missing in SNS response message body")
         except ValueError:
-            assert False, "SNS response Signature is not a valid base64 encoded value"
+            raise AssertionError("SNS response Signature is not a valid base64 encoded value")
 
         expected_sns_body = {
             "Message": "msg",
@@ -280,6 +280,30 @@ class TestSns:
                 True,
             ),
             (
+                "anything-but list filter with match",
+                {"filter": [{"anything-but": ["type1", "type2"]}]},
+                {"filter": {"Type": "String", "Value": "type1"}},
+                False,
+            ),
+            (
+                "anything-but list filter with no match",
+                {"filter": [{"anything-but": ["type1", "type3"]}]},
+                {"filter": {"Type": "String", "Value": "type2"}},
+                True,
+            ),
+            (
+                "anything-but string filter with prefix match",
+                {"filter": [{"anything-but": {"prefix": "type"}}]},
+                {"filter": {"Type": "String", "Value": "type1"}},
+                False,
+            ),
+            (
+                "anything-but string filter with no prefix match",
+                {"filter": [{"anything-but": {"prefix": "type-"}}]},
+                {"filter": {"Type": "String", "Value": "type1"}},
+                True,
+            ),
+            (
                 "prefix string filter with match",
                 {"filter": [{"prefix": "typ"}]},
                 {"filter": {"Type": "String", "Value": "type1"}},
@@ -299,6 +323,52 @@ class TestSns:
             (
                 "prefix string filter with no match",
                 {"filter": [{"prefix": "test"}]},
+                {"filter": {"Type": "String", "Value": "type2"}},
+                False,
+            ),
+            (
+                "suffix string filter with match",
+                {"filter": [{"suffix": "pe1"}]},
+                {"filter": {"Type": "String", "Value": "type1"}},
+                True,
+            ),
+            (
+                "suffix string filter match with an array",
+                {"filter": [{"suffix": "gby"}]},
+                {
+                    "filter": {
+                        "Type": "String.Array",
+                        "Value": '["soccer", "rugby", "hockey"]',
+                    }
+                },
+                True,
+            ),
+            (
+                "suffix string filter with no match",
+                {"filter": [{"suffix": "test"}]},
+                {"filter": {"Type": "String", "Value": "type2"}},
+                False,
+            ),
+            (
+                "equals-ignore-case string filter with match",
+                {"filter": [{"equals-ignore-case": "TYPE1"}]},
+                {"filter": {"Type": "String", "Value": "type1"}},
+                True,
+            ),
+            (
+                "equals-ignore-case string filter match with an array",
+                {"filter": [{"equals-ignore-case": "RuGbY"}]},
+                {
+                    "filter": {
+                        "Type": "String.Array",
+                        "Value": '["soccer", "rugby", "hockey"]',
+                    }
+                },
+                True,
+            ),
+            (
+                "equals-ignore-case string filter with no match",
+                {"filter": [{"equals-ignore-case": "test"}]},
                 {"filter": {"Type": "String", "Value": "type2"}},
                 False,
             ),
@@ -528,15 +598,72 @@ class TestSns:
                 {"field": {"Type": "String.Array", "Value": "['anything']"}},
                 False,
             ),
+            (
+                "$or ",
+                {"f1": ["v1"], "$or": [{"f2": ["v2"]}, {"f3": ["v3"]}]},
+                {"f1": {"Type": "String", "Value": "v1"}, "f3": {"Type": "String", "Value": "v3"}},
+                True,
+            ),
+            (
+                "$or ",
+                {"f1": ["v1"], "$or": [{"f2": ["v2"]}, {"f3": ["v3"]}]},
+                {"f1": {"Type": "String", "Value": "v2"}, "f3": {"Type": "String", "Value": "v3"}},
+                False,
+            ),
+            (
+                "$or2",
+                {
+                    "f1": ["v1"],
+                    "$or": [
+                        {"f2": ["v2", "v3"]},
+                        {"f3": ["v4"], "$or": [{"f4": ["v5", "v6"]}, {"f5": ["v7", "v8"]}]},
+                    ],
+                },
+                {"f1": {"Type": "String", "Value": "v1"}, "f2": {"Type": "String", "Value": "v2"}},
+                True,
+            ),
+            (
+                "$or3",
+                {
+                    "f1": ["v1"],
+                    "$or": [
+                        {"f2": ["v2", "v3"]},
+                        {"f3": ["v4"], "$or": [{"f4": ["v5", "v6"]}, {"f5": ["v7", "v8"]}]},
+                    ],
+                },
+                {
+                    "f1": {"Type": "String", "Value": "v1"},
+                    "f3": {"Type": "String", "Value": "v4"},
+                    "f4": {"Type": "String", "Value": "v6"},
+                },
+                True,
+            ),
+            (
+                "cidr filter with no match",
+                {"filter": [{"cidr": "10.0.0.0/24"}]},
+                {"filter": {"Type": "String", "Value": "10.0.0.256"}},
+                False,
+            ),
+            (
+                "cidr filter with no match 2",
+                {"filter": [{"cidr": "10.0.0.0/24"}]},
+                {"filter": {"Type": "String", "Value": "10.0.1.255"}},
+                False,
+            ),
+            (
+                "cidr filter with match",
+                {"filter": [{"cidr": "10.0.0.0/24"}]},
+                {"filter": {"Type": "String", "Value": "10.0.0.255"}},
+                True,
+            ),
         ]
 
         sub_filter = SubscriptionFilter()
         for test in test_data:
-            filter_policy = test[1]
-            attributes = test[2]
-            expected = test[3]
-            assert expected == sub_filter.check_filter_policy_on_message_attributes(
-                filter_policy, attributes
+            _, filter_policy, attributes, expected = test
+            assert (
+                sub_filter.check_filter_policy_on_message_attributes(filter_policy, attributes)
+                == expected
             )
 
     def test_is_raw_message_delivery(self, subscriber):
@@ -549,8 +676,8 @@ class TestSns:
     def test_is_not_raw_message_delivery(self, subscriber):
         invalid_values = ["false", "False", False, "somevalue", ""]
 
-        for invalid_values in invalid_values:
-            subscriber["RawMessageDelivery"] = invalid_values
+        for value in invalid_values:
+            subscriber["RawMessageDelivery"] = value
             assert not is_raw_message_delivery(subscriber)
 
         del subscriber["RawMessageDelivery"]
@@ -601,13 +728,82 @@ class TestSns:
                     ({"f1": "v3", "f2": "v5"}, False),
                 ),
             ),
+            (
+                {"f1": ["v1", "v2"]},  # f1 must be v1 OR v2 (f1=v1 OR f1=v2)
+                (
+                    ({"f1": ["v1"], "f2": "v4"}, True),
+                    ({"f1": ["v2", "v3"], "f2": "v5"}, True),
+                    ({"f1": ["v3", "v4"], "f2": "v5"}, False),
+                ),
+            ),
+            (
+                {"f1": {"f2": ["v1"]}},  # f1.f2 must be v1
+                (
+                    ({"f1": {"f2": "v1"}, "f3": "v4"}, True),
+                    ({"f1": {"f2": ["v1"]}, "f3": "v4"}, True),
+                    ({"f1": {"f4": "v1"}, "f3": "v4"}, False),
+                    ({"f1": ["v1", "v3"], "f3": "v5"}, False),
+                    ({"f1": "v1", "f3": "v5"}, False),
+                ),
+            ),
+            (
+                {"f1": {"f2": {"f3": {"f4": ["v1"]}}}},
+                (
+                    ({"f1": {"f2": {"f3": {"f4": "v1"}}}}, True),
+                    ({"f1": [{"f2": {"f3": {"f4": "v1"}}}]}, True),
+                    ({"f1": [{"f2": [{"f3": {"f4": "v1"}}]}]}, True),
+                    ({"f1": [{"f2": [[{"f3": {"f4": "v1"}}]]}]}, True),
+                    ({"f1": [{"f2": [{"f3": {"f4": "v1"}, "f5": {"f6": "v2"}}]}]}, True),
+                    ({"f1": [{"f2": [[{"f3": {"f4": "v2"}}, {"f3": {"f4": "v1"}}]]}]}, True),
+                    ({"f1": [{"f2": {"f3": {"f4": "v2"}}}]}, False),
+                    ({"f1": [{"f2": {"fx": {"f4": "v1"}}}]}, False),
+                    ({"f1": [{"fx": {"f3": {"f4": "v1"}}}]}, False),
+                    ({"fx": [{"f2": {"f3": {"f4": "v1"}}}]}, False),
+                    ({"f1": [{"f2": [{"f3": {"f4": "v2"}, "f5": {"f6": "v3"}}]}]}, False),
+                    ({"f1": [{"f2": [[{"f3": {"f4": "v2"}}, {"f3": {"f4": "v3"}}]]}]}, False),
+                ),
+            ),
+            (
+                {"f1": {"f2": ["v2"]}},
+                [
+                    ({"f3": ["v3"], "f1": {"f2": "v2"}}, True),
+                ],
+            ),
+            (
+                {
+                    "$or": [{"f1": ["v1", "v2"]}, {"f2": ["v3", "v4"]}],
+                    "f3": {
+                        "f4": ["v5"],
+                        "$or": [
+                            {"f5": ["v6"]},
+                            {"f6": ["v7"]},
+                        ],
+                    },
+                },
+                (
+                    ({"f1": "v1", "f3": {"f4": "v5", "f5": "v6"}}, True),
+                    ({"f1": "v2", "f3": {"f4": "v5", "f5": "v6"}}, True),
+                    ({"f2": "v3", "f3": {"f4": "v5", "f5": "v6"}}, True),
+                    ({"f2": "v4", "f3": {"f4": "v5", "f5": "v6"}}, True),
+                    ({"f1": "v1", "f3": {"f4": "v5", "f6": "v7"}}, True),
+                    ({"f1": "v3", "f3": {"f4": "v5", "f6": "v7"}}, False),
+                    ({"f2": "v1", "f3": {"f4": "v5", "f6": "v7"}}, False),
+                    ({"f1": "v1", "f3": {"f4": "v6", "f6": "v7"}}, False),
+                    ({"f1": "v1", "f3": {"f4": "v5", "f6": "v1"}}, False),
+                    ({"f1": "v1", "f3": {"f6": "v7"}}, False),
+                    ({"f1": "v1", "f3": {"f4": "v5"}}, False),
+                ),
+            ),
         ]
 
         sub_filter = SubscriptionFilter()
         for filter_policy, messages in test_data:
             for message_body, expected in messages:
-                assert expected == sub_filter.check_filter_policy_on_message_body(
-                    filter_policy, message_body=json.dumps(message_body)
+                assert (
+                    sub_filter.check_filter_policy_on_message_body(
+                        filter_policy, message_body=json.dumps(message_body)
+                    )
+                    == expected
                 ), (filter_policy, message_body)
 
     @pytest.mark.parametrize("region", ["us-east-1", "eu-central-1", "us-west-2", "my-region"])
@@ -663,3 +859,113 @@ class TestSns:
             canonical_string
             == f"Message\ntest content\nMessageId\nabdcdef\nSubscribeURL\nhttp://randomurl.com\nTimestamp\n{timestamp}\nToken\nrandomtoken\nTopicArn\narn\nType\nSubscriptionConfirmation\n"
         )
+
+    def test_filter_policy_complexity(self):
+        # examples taken from https://docs.aws.amazon.com/sns/latest/dg/subscription-filter-policy-constraints.html
+        # and https://docs.aws.amazon.com/sns/latest/dg/and-or-logic.html
+        validator_flat = FilterPolicyValidator(scope="MessageAttributes", is_subscribe_call=True)
+        validator_nested = FilterPolicyValidator(scope="MessageBody", is_subscribe_call=True)
+
+        filter_policy = {
+            "key_a": {
+                "key_b": {"key_c": ["value_one", "value_two", "value_three", "value_four"]},
+            },
+            "key_d": {"key_e": ["value_one", "value_two", "value_three"]},
+            "key_f": ["value_one", "value_two", "value_three"],
+        }
+        rules, combinations = validator_nested.aggregate_rules(filter_policy)
+        assert combinations == 216
+
+        filter_policy = {
+            "source": ["aws.cloudwatch", "aws.events", "aws.test", "aws.test2"],
+            "$or": [
+                {"metricName": ["CPUUtilization", "ReadLatency", "t1", "t2", "t3", "t4"]},
+                {
+                    "metricType": ["MetricType", "TestType", "TestType2", "TestType3"],
+                    "$or": [{"metricId": [1234, 4321, 5678, 9012]}, {"spaceId": [1, 2, 3, 4]}],
+                },
+            ],
+        }
+
+        rules, combinations = validator_flat.aggregate_rules(filter_policy)
+        assert combinations == 152
+
+        filter_policy = {
+            "$or": [
+                {"metricName": ["CPUUtilization", "ReadLatency", "TestValue"]},
+                {"namespace": ["AWS/EC2", "AWS/ES"]},
+            ],
+            "detail": {
+                "scope": ["Service", "Test"],
+                "$or": [
+                    {"source": ["aws.cloudwatch"]},
+                    {"type": ["CloudWatch Alarm State Change", "TestValue", "TestValue2"]},
+                ],
+            },
+        }
+
+        rules, combinations = validator_nested.aggregate_rules(filter_policy)
+        assert combinations == 160
+
+        filter_policy = {
+            "source": ["aws.cloudwatch", "aws.events", "aws.test"],
+            "$or": [
+                {
+                    "metricName": [
+                        "CPUUtilization",
+                        "ReadLatency",
+                        "TestVal",
+                        "TestVal2",
+                        "TestVal3",
+                        "TestVal4",
+                    ]
+                },
+                {
+                    "metricType": ["MetricType", "TestType", "TestType2", "TestType3"],
+                    "$or": [
+                        {"metricId": [1234, 4321, 5678, 9012]},
+                        {"spaceId": [1, 2, 3, 4, 5, 6, 7]},
+                    ],
+                },
+            ],
+        }
+        rules, combinations = validator_flat.aggregate_rules(filter_policy)
+        assert combinations == 150
+
+    @pytest.mark.parametrize(
+        "payload,expected",
+        [
+            (
+                {"f3": ["v3"], "f1": {"f2": "v2"}},
+                [{"f3": "v3", "f1.f2": "v2"}],
+            ),
+            (
+                {"f3": ["v3", "v4"], "f1": {"f2": "v2"}},
+                [{"f3": "v3", "f1.f2": "v2"}, {"f3": "v4", "f1.f2": "v2"}],
+            ),
+        ],
+    )
+    def test_filter_flatten_payload(self, payload, expected):
+        sub_filter = SubscriptionFilter()
+        assert sub_filter.flatten_payload(payload) == expected
+
+    @pytest.mark.parametrize(
+        "policy,expected",
+        [
+            (
+                {"filter": [{"anything-but": {"prefix": "type"}}]},
+                [{"filter": [{"anything-but": {"prefix": "type"}}]}],
+            ),
+            (
+                {"field1": {"field2": {"field3": "val1", "field4": "val2"}}},
+                [{"field1.field2.field3": "val1", "field1.field2.field4": "val2"}],
+            ),
+            (
+                {"$or": [{"field1": "val1"}, {"field2": "val2"}], "field3": "val3"},
+                [{"field1": "val1", "field3": "val3"}, {"field2": "val2", "field3": "val3"}],
+            ),
+        ],
+    )
+    def test_filter_flatten_policy(self, policy, expected):
+        sub_filter = SubscriptionFilter()
+        assert sub_filter.flatten_policy(policy) == expected

@@ -3,6 +3,7 @@ import os
 import pytest
 
 from localstack.testing.pytest import markers
+from localstack.testing.pytest.fixtures import StackDeployError
 from localstack.utils.files import load_file
 from localstack.utils.strings import short_uid
 
@@ -67,6 +68,52 @@ class TestCloudFormationMappings:
                 ],
             )
         snapshot.match("mapping_nonexisting_key_exc", e.value.response)
+
+    @markers.aws.only_localstack
+    def test_async_mapping_error_first_level(self, deploy_cfn_template):
+        """
+        We don't (yet) support validating mappings synchronously in `create_changeset` like AWS does, however
+        we don't fail with a good error message at all. This test ensures that the deployment fails with a
+        nicer error message than a Python traceback about "`None` has no attribute `get`".
+        """
+        topic_name = f"test-topic-{short_uid()}"
+        with pytest.raises(StackDeployError) as exc_info:
+            deploy_cfn_template(
+                template_path=os.path.join(
+                    THIS_DIR,
+                    "../../../templates/mappings/simple-mapping.yaml",
+                ),
+                parameters={
+                    "TopicName": topic_name,
+                    "TopicNameSuffixSelector": "C",
+                },
+            )
+
+        assert "Cannot find map key 'C' in mapping 'TopicSuffixMap'" in str(exc_info.value)
+
+    @markers.aws.only_localstack
+    def test_async_mapping_error_second_level(self, deploy_cfn_template):
+        """
+        Similar to the `test_async_mapping_error_first_level` test above, but
+        checking the second level of mapping lookup
+        """
+        topic_name = f"test-topic-{short_uid()}"
+        with pytest.raises(StackDeployError) as exc_info:
+            deploy_cfn_template(
+                template_path=os.path.join(
+                    THIS_DIR,
+                    "../../../templates/mappings/simple-mapping.yaml",
+                ),
+                parameters={
+                    "TopicName": topic_name,
+                    "TopicNameSuffixSelector": "A",
+                    "TopicAttributeSelector": "NotValid",
+                },
+            )
+
+        assert "Cannot find map key 'NotValid' in mapping 'TopicSuffixMap' under key 'A'" in str(
+            exc_info.value
+        )
 
     @markers.aws.validated
     @pytest.mark.skip(reason="not implemented")
@@ -153,3 +200,50 @@ class TestCloudFormationMappings:
                 ],
             )
         snapshot.match("mapping_minimum_level_exc", e.value.response)
+
+    @markers.aws.validated
+    @pytest.mark.parametrize(
+        "map_key,should_error",
+        [
+            ("A", False),
+            ("B", True),
+        ],
+        ids=["should-deploy", "should-not-deploy"],
+    )
+    def test_mapping_ref_map_key(self, deploy_cfn_template, aws_client, map_key, should_error):
+        topic_name = f"topic-{short_uid()}"
+        stack = deploy_cfn_template(
+            template_path=os.path.join(
+                THIS_DIR, "../../../templates/mappings/mapping-ref-map-key.yaml"
+            ),
+            parameters={
+                "MapName": "MyMap",
+                "MapKey": map_key,
+                "TopicName": topic_name,
+            },
+        )
+
+        topic_arn = stack.outputs.get("TopicArn")
+        if should_error:
+            assert topic_arn is None
+        else:
+            assert topic_arn is not None
+
+            aws_client.sns.get_topic_attributes(TopicArn=topic_arn)
+
+    @markers.aws.validated
+    def test_aws_refs_in_mappings(self, deploy_cfn_template, account_id):
+        """
+        This test asserts that Pseudo references aka "AWS::" are supported inside a mapping inside a Conditional.
+        It's worth remembering that even with references being supported, AWS rejects names that are not alphanumeric
+        in Mapping name or the second level key.
+        """
+        stack_name = f"Stack{short_uid()}"
+        stack = deploy_cfn_template(
+            template_path=os.path.join(
+                THIS_DIR, "../../../templates/mappings/mapping-aws-ref-map-key.yaml"
+            ),
+            stack_name=stack_name,
+            template_mapping={"StackName": stack_name},
+        )
+        assert stack.outputs.get("TopicArn")

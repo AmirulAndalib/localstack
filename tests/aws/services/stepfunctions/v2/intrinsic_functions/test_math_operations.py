@@ -1,24 +1,24 @@
 import json
 
+from localstack_snapshot.snapshots.transformer import JsonpathTransformer, RegexTransformer
+
 from localstack.testing.pytest import markers
-from localstack.testing.snapshots.transformer import JsonpathTransformer, RegexTransformer
+from localstack.testing.pytest.stepfunctions.utils import await_execution_success
 from localstack.utils.strings import short_uid
 from tests.aws.services.stepfunctions.templates.intrinsicfunctions.intrinsic_functions_templates import (
     IntrinsicFunctionTemplate as IFT,
 )
-from tests.aws.services.stepfunctions.utils import await_execution_success
 from tests.aws.services.stepfunctions.v2.intrinsic_functions.utils import create_and_test_on_inputs
 
 # TODO: test for validation errors, and boundary testing.
 
 
-@markers.snapshot.skip_snapshot_verify(paths=["$..loggingConfiguration", "$..tracingConfiguration"])
 class TestMathOperations:
     @markers.aws.validated
     def test_math_random(
-        self, create_iam_role_for_sfn, create_state_machine, sfn_snapshot, aws_client
+        self, create_state_machine_iam_role, create_state_machine, sfn_snapshot, aws_client
     ):
-        snf_role_arn = create_iam_role_for_sfn()
+        snf_role_arn = create_state_machine_iam_role(aws_client)
         sfn_snapshot.add_transformer(RegexTransformer(snf_role_arn, "snf_role_arn"))
         sfn_snapshot.add_transformer(
             JsonpathTransformer(
@@ -40,7 +40,7 @@ class TestMathOperations:
         definition_str = json.dumps(definition)
 
         creation_resp = create_state_machine(
-            name=sm_name, definition=definition_str, roleArn=snf_role_arn
+            aws_client, name=sm_name, definition=definition_str, roleArn=snf_role_arn
         )
         sfn_snapshot.add_transformer(sfn_snapshot.transform.sfn_sm_create_arn(creation_resp, 0))
         state_machine_arn = creation_resp["stateMachineArn"]
@@ -69,9 +69,9 @@ class TestMathOperations:
 
     @markers.aws.validated
     def test_math_random_seeded(
-        self, create_iam_role_for_sfn, create_state_machine, sfn_snapshot, aws_client
+        self, create_state_machine_iam_role, create_state_machine, sfn_snapshot, aws_client
     ):
-        snf_role_arn = create_iam_role_for_sfn()
+        snf_role_arn = create_state_machine_iam_role(aws_client)
         sfn_snapshot.add_transformer(RegexTransformer(snf_role_arn, "snf_role_arn"))
         sfn_snapshot.add_transformer(
             JsonpathTransformer(
@@ -93,7 +93,7 @@ class TestMathOperations:
         definition_str = json.dumps(definition)
 
         creation_resp = create_state_machine(
-            name=sm_name, definition=definition_str, roleArn=snf_role_arn
+            aws_client, name=sm_name, definition=definition_str, roleArn=snf_role_arn
         )
         sfn_snapshot.add_transformer(sfn_snapshot.transform.sfn_sm_create_arn(creation_resp, 0))
         state_machine_arn = creation_resp["stateMachineArn"]
@@ -117,7 +117,7 @@ class TestMathOperations:
 
     @markers.aws.validated
     def test_math_add(
-        self, create_iam_role_for_sfn, create_state_machine, sfn_snapshot, aws_client
+        self, create_state_machine_iam_role, create_state_machine, sfn_snapshot, aws_client
     ):
         add_tuples = [
             (-9, 3),
@@ -148,8 +148,8 @@ class TestMathOperations:
         for fst, snd in add_tuples:
             input_values.append({"fst": fst, "snd": snd})
         create_and_test_on_inputs(
-            aws_client.stepfunctions,
-            create_iam_role_for_sfn,
+            aws_client,
+            create_state_machine_iam_role,
             create_state_machine,
             sfn_snapshot,
             IFT.MATH_ADD,

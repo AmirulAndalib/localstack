@@ -23,10 +23,10 @@ def _collect_operations() -> Tuple[ServiceModel, OperationModel]:
             # FIXME try to support more and more services, get these exclusions down!
             # Exclude all operations for the following, currently _not_ supported services
             if service.service_name in [
-                "bedrock",
                 "bedrock-agent",
                 "bedrock-agent-runtime",
-                "bedrock-runtime",
+                "bedrock-data-automation",
+                "bedrock-data-automation-runtime",
                 "chime",
                 "chime-sdk-identity",
                 "chime-sdk-media-pipelines",
@@ -36,6 +36,8 @@ def _collect_operations() -> Tuple[ServiceModel, OperationModel]:
                 "codecatalyst",
                 "connect",
                 "connect-contact-lens",
+                "connectcampaigns",
+                "connectcampaignsv2",
                 "greengrassv2",
                 "iot1click",
                 "iot1click-devices",
@@ -52,8 +54,10 @@ def _collect_operations() -> Tuple[ServiceModel, OperationModel]:
                 "lex-runtime",
                 "lexv2-models",
                 "lexv2-runtime",
+                "mailmanager",
                 "marketplace-catalog",
                 "marketplace-deployment",
+                "marketplace-reporting",
                 "personalize",
                 "personalize-events",
                 "personalize-runtime",
@@ -72,7 +76,7 @@ def _collect_operations() -> Tuple[ServiceModel, OperationModel]:
                     service,
                     service.protocol,
                     service.operation_model(operation_name),
-                    marks=pytest.mark.xfail(
+                    marks=pytest.mark.skip(
                         reason=f"{service.service_name} is currently not supported by the service router"
                     ),
                 )
@@ -158,10 +162,12 @@ def test_service_router_works_for_every_service(
 ):
     caplog.set_level("CRITICAL", "botocore")
 
-    # if we test the routing to the internalized sqs json, we want to use the service name "sqs-json" in order to
-    # instruct botocore to load the internalized spec instead of the default (query)
+    # if we test the routing to the internalized sqs query, we want to use the service name "sqs-query" in order to
+    # instruct botocore to load the internalized spec instead of the default (json)
     service_name = (
-        "sqs-json" if service.service_name == "sqs" and protocol == "json" else service.service_name
+        "sqs-query"
+        if service.service_name == "sqs" and protocol == "query"
+        else service.service_name
     )
 
     # Create a dummy request for the service router

@@ -5,13 +5,13 @@
       "put_function_event_invoke_config": {
         "DestinationConfig": {
           "OnFailure": {
-            "Destination": "arn:aws:sqs:<region>:111111111111:<resource:1>"
+            "Destination": "arn:<partition>:sqs:<region>:111111111111:<resource:1>"
           },
           "OnSuccess": {
-            "Destination": "arn:aws:sqs:<region>:111111111111:<resource:1>"
+            "Destination": "arn:<partition>:sqs:<region>:111111111111:<resource:1>"
           }
         },
-        "FunctionArn": "arn:aws:lambda:<region>:111111111111:function:<resource:2>:$LATEST",
+        "FunctionArn": "arn:<partition>:lambda:<region>:111111111111:function:<resource:2>:$LATEST",
         "LastModified": "datetime",
         "ResponseMetadata": {
           "HTTPHeaders": {},
@@ -26,7 +26,7 @@
               "timestamp": "date",
               "requestContext": {
                 "requestId": "<uuid:1>",
-                "functionArn": "arn:aws:lambda:<region>:111111111111:function:<resource:2>:$LATEST",
+                "functionArn": "arn:<partition>:lambda:<region>:111111111111:function:<resource:2>:$LATEST",
                 "condition": "Success",
                 "approximateInvokeCount": 1
               },
@@ -38,7 +38,7 @@
               "responsePayload": {
                 "event": {},
                 "context": {
-                  "invoked_function_arn": "arn:aws:lambda:<region>:111111111111:function:<resource:2>",
+                  "invoked_function_arn": "arn:<partition>:lambda:<region>:111111111111:function:<resource:2>",
                   "function_version": "$LATEST",
                   "function_name": "<resource:2>",
                   "memory_limit_in_mb": "128",
@@ -61,78 +61,19 @@
       }
     }
   },
-  "tests/aws/services/lambda_/test_lambda_destinations.py::TestLambdaDestinationSqs::test_assess_lambda_destination_invocation[RetriesExhausted-payload1]": {
-    "recorded-date": "01-09-2022, 09:03:35",
-    "recorded-content": {
-      "put_function_event_invoke_config": {
-        "DestinationConfig": {
-          "OnFailure": {
-            "Destination": "arn:aws:sqs:<region>:111111111111:<resource:1>"
-          },
-          "OnSuccess": {
-            "Destination": "arn:aws:sqs:<region>:111111111111:<resource:1>"
-          }
-        },
-        "FunctionArn": "arn:aws:lambda:<region>:111111111111:function:<resource:2>:$LATEST",
-        "LastModified": "datetime",
-        "ResponseMetadata": {
-          "HTTPHeaders": {},
-          "HTTPStatusCode": 200
-        }
-      },
-      "receive_message_result": {
-        "Messages": [
-          {
-            "Body": {
-              "version": "1.0",
-              "timestamp": "date",
-              "requestContext": {
-                "requestId": "<uuid:1>",
-                "functionArn": "arn:aws:lambda:<region>:111111111111:function:<resource:2>:$LATEST",
-                "condition": "RetriesExhausted",
-                "approximateInvokeCount": 3
-              },
-              "requestPayload": {
-                "raise_error": 1
-              },
-              "responseContext": {
-                "statusCode": 200,
-                "executedVersion": "$LATEST",
-                "functionError": "Unhandled"
-              },
-              "responsePayload": {
-                "errorMessage": "Test exception (this is intentional)",
-                "errorType": "Exception",
-                "stackTrace": [
-                  "  File \"/var/task/handler.py\", line 54, in handler\n    raise Exception(\"Test exception (this is intentional)\")\n"
-                ]
-              }
-            },
-            "MD5OfBody": "<m-d5-of-body:1>",
-            "MessageId": "<uuid:2>",
-            "ReceiptHandle": "<receipt-handle:1>"
-          }
-        ],
-        "ResponseMetadata": {
-          "HTTPHeaders": {},
-          "HTTPStatusCode": 200
-        }
-      }
-    }
-  },
   "tests/aws/services/lambda_/test_lambda_destinations.py::TestLambdaDestinationSqs::test_assess_lambda_destination_invocation[payload0]": {
-    "recorded-date": "23-03-2023, 00:15:17",
+    "recorded-date": "21-03-2024, 12:26:43",
     "recorded-content": {
       "put_function_event_invoke_config": {
         "DestinationConfig": {
           "OnFailure": {
-            "Destination": "arn:aws:sqs:<region>:111111111111:<resource:1>"
+            "Destination": "arn:<partition>:sqs:<region>:111111111111:<resource:1>"
           },
           "OnSuccess": {
-            "Destination": "arn:aws:sqs:<region>:111111111111:<resource:1>"
+            "Destination": "arn:<partition>:sqs:<region>:111111111111:<resource:1>"
           }
         },
-        "FunctionArn": "arn:aws:lambda:<region>:111111111111:function:<resource:2>:$LATEST",
+        "FunctionArn": "arn:<partition>:lambda:<region>:111111111111:function:<resource:2>:$LATEST",
         "LastModified": "datetime",
         "MaximumRetryAttempts": 0,
         "ResponseMetadata": {
@@ -148,7 +89,7 @@
               "timestamp": "date",
               "requestContext": {
                 "requestId": "<uuid:1>",
-                "functionArn": "arn:aws:lambda:<region>:111111111111:function:<resource:2>:$LATEST",
+                "functionArn": "arn:<partition>:lambda:<region>:111111111111:function:<resource:2>:$LATEST",
                 "condition": "Success",
                 "approximateInvokeCount": 1
               },
@@ -160,7 +101,7 @@
               "responsePayload": {
                 "event": {},
                 "context": {
-                  "invoked_function_arn": "arn:aws:lambda:<region>:111111111111:function:<resource:2>",
+                  "invoked_function_arn": "arn:<partition>:lambda:<region>:111111111111:function:<resource:2>",
                   "function_version": "$LATEST",
                   "function_name": "<resource:2>",
                   "memory_limit_in_mb": "128",
@@ -184,18 +125,18 @@
     }
   },
   "tests/aws/services/lambda_/test_lambda_destinations.py::TestLambdaDestinationSqs::test_assess_lambda_destination_invocation[payload1]": {
-    "recorded-date": "23-03-2023, 00:15:20",
+    "recorded-date": "21-03-2024, 12:26:48",
     "recorded-content": {
       "put_function_event_invoke_config": {
         "DestinationConfig": {
           "OnFailure": {
-            "Destination": "arn:aws:sqs:<region>:111111111111:<resource:1>"
+            "Destination": "arn:<partition>:sqs:<region>:111111111111:<resource:1>"
           },
           "OnSuccess": {
-            "Destination": "arn:aws:sqs:<region>:111111111111:<resource:1>"
+            "Destination": "arn:<partition>:sqs:<region>:111111111111:<resource:1>"
           }
         },
-        "FunctionArn": "arn:aws:lambda:<region>:111111111111:function:<resource:2>:$LATEST",
+        "FunctionArn": "arn:<partition>:lambda:<region>:111111111111:function:<resource:2>:$LATEST",
         "LastModified": "datetime",
         "MaximumRetryAttempts": 0,
         "ResponseMetadata": {
@@ -211,7 +152,7 @@
               "timestamp": "date",
               "requestContext": {
                 "requestId": "<uuid:1>",
-                "functionArn": "arn:aws:lambda:<region>:111111111111:function:<resource:2>:$LATEST",
+                "functionArn": "arn:<partition>:lambda:<region>:111111111111:function:<resource:2>:$LATEST",
                 "condition": "RetriesExhausted",
                 "approximateInvokeCount": 1
               },
@@ -228,7 +169,7 @@
                 "errorType": "Exception",
                 "requestId": "<uuid:1>",
                 "stackTrace": [
-                  "  File \"/var/task/handler.py\", line 54, in handler\n    raise Exception(\"Test exception (this is intentional)\")\n"
+                  "  File \"/var/task/handler.py\", line 55, in handler\n    raise Exception(\"Test exception (this is intentional)\")\n"
                 ]
               }
             },
@@ -245,7 +186,7 @@
     }
   },
   "tests/aws/services/lambda_/test_lambda_destinations.py::TestLambdaDLQ::test_dead_letter_queue": {
-    "recorded-date": "27-02-2023, 16:00:54",
+    "recorded-date": "17-06-2024, 11:49:58",
     "recorded-content": {
       "create_lambda_with_dlq": {
         "CreateEventSourceMappingResponse": null,
@@ -256,7 +197,7 @@
           "CodeSha256": "<code-sha256:1>",
           "CodeSize": "<code-size>",
           "DeadLetterConfig": {
-            "TargetArn": "arn:aws:sqs:<region>:111111111111:<resource:1>"
+            "TargetArn": "arn:<partition>:sqs:<region>:111111111111:<resource:1>"
           },
           "Description": "",
           "Environment": {
@@ -265,17 +206,21 @@
           "EphemeralStorage": {
             "Size": 512
           },
-          "FunctionArn": "arn:aws:lambda:<region>:111111111111:function:<function-name:1>",
+          "FunctionArn": "arn:<partition>:lambda:<region>:111111111111:function:<function-name:1>",
           "FunctionName": "<function-name:1>",
           "Handler": "handler.handler",
           "LastModified": "date",
+          "LoggingConfig": {
+            "LogFormat": "Text",
+            "LogGroup": "/aws/lambda/<function-name:1>"
+          },
           "MemorySize": 128,
           "PackageType": "Zip",
           "RevisionId": "<uuid:1>",
-          "Role": "arn:aws:iam::111111111111:role/<resource:2>",
-          "Runtime": "python3.9",
+          "Role": "arn:<partition>:iam::111111111111:role/<resource:2>",
+          "Runtime": "python3.12",
           "RuntimeVersionConfig": {
-            "RuntimeVersionArn": "arn:aws:lambda:<region>::runtime:<resource:3>"
+            "RuntimeVersionArn": "arn:<partition>:lambda:<region>::runtime:<resource:3>"
           },
           "SnapStart": {
             "ApplyOn": "None",
@@ -333,7 +278,7 @@
         "CodeSha256": "<code-sha256:1>",
         "CodeSize": "<code-size>",
         "DeadLetterConfig": {
-          "TargetArn": "arn:aws:sqs:<region>:111111111111:<resource:1>"
+          "TargetArn": "arn:<partition>:sqs:<region>:111111111111:<resource:1>"
         },
         "Description": "",
         "Environment": {
@@ -342,20 +287,24 @@
         "EphemeralStorage": {
           "Size": 512
         },
-        "FunctionArn": "arn:aws:lambda:<region>:111111111111:function:<function-name:1>",
+        "FunctionArn": "arn:<partition>:lambda:<region>:111111111111:function:<function-name:1>",
         "FunctionName": "<function-name:1>",
         "Handler": "handler.handler",
         "LastModified": "date",
         "LastUpdateStatus": "InProgress",
         "LastUpdateStatusReason": "The function is being created.",
         "LastUpdateStatusReasonCode": "Creating",
+        "LoggingConfig": {
+          "LogFormat": "Text",
+          "LogGroup": "/aws/lambda/<function-name:1>"
+        },
         "MemorySize": 128,
         "PackageType": "Zip",
         "RevisionId": "<uuid:3>",
-        "Role": "arn:aws:iam::111111111111:role/<resource:2>",
-        "Runtime": "python3.9",
+        "Role": "arn:<partition>:iam::111111111111:role/<resource:2>",
+        "Runtime": "python3.12",
         "RuntimeVersionConfig": {
-          "RuntimeVersionArn": "arn:aws:lambda:<region>::runtime:<resource:3>"
+          "RuntimeVersionArn": "arn:<partition>:lambda:<region>::runtime:<resource:3>"
         },
         "SnapStart": {
           "ApplyOn": "None",
@@ -381,7 +330,7 @@
           "errorType": "Exception",
           "requestId": "<uuid:4>",
           "stackTrace": [
-            "  File \"/var/task/handler.py\", line 54, in handler\n    raise Exception(\"Test exception (this is intentional)\")\n"
+            "  File \"/var/task/handler.py\", line 55, in handler\n    raise Exception(\"Test exception (this is intentional)\")\n"
           ]
         },
         "StatusCode": 200,
@@ -395,9 +344,10 @@
           "START RequestId: <uuid:4> Version: $LATEST",
           "Lambda log message - print function",
           "[INFO]\tdate\t<uuid:4>\tLambda log message - logging module",
+          "LAMBDA_WARNING: Unhandled exception. The most likely cause is an issue in the function code. However, in rare cases, a Lambda runtime update can cause unexpected function behavior. For functions using managed runtimes, runtime updates can be triggered by a function change, or can be applied automatically. To determine if the runtime has been updated, check the runtime version in the INIT_START log entry. If this error correlates with a change in the runtime version, you may be able to mitigate this error by temporarily rolling back to the previous runtime version. For more information, see https://docs.aws.amazon.com/lambda/latest/dg/runtimes-update.html",
           "[ERROR] Exception: Test exception (this is intentional)",
           "Traceback (most recent call last):",
-          "\u00a0\u00a0File \"/var/task/handler.py\", line 54, in handler",
+          "\u00a0\u00a0File \"/var/task/handler.py\", line 55, in handler",
           "\u00a0\u00a0\u00a0\u00a0raise Exception(\"Test exception (this is intentional)\")END RequestId: <uuid:4>"
         ]
       }
@@ -420,7 +370,7 @@
               "timestamp": "date",
               "requestContext": {
                 "requestId": "<uuid:1>",
-                "functionArn": "arn:aws:lambda:<region>:111111111111:function:<resource:1>:$LATEST",
+                "functionArn": "arn:<partition>:lambda:<region>:111111111111:function:<resource:1>:$LATEST",
                 "condition": "RetriesExhausted",
                 "approximateInvokeCount": 3
               },
@@ -468,7 +418,7 @@
           "timestamp": "date",
           "requestContext": {
             "requestId": "<uuid:1>",
-            "functionArn": "arn:aws:lambda:<region>:111111111111:function:<resource:1>:$LATEST",
+            "functionArn": "arn:<partition>:lambda:<region>:111111111111:function:<resource:1>:$LATEST",
             "condition": "EventAgeExceeded",
             "approximateInvokeCount": 1
           },
@@ -505,7 +455,7 @@
           "timestamp": "date",
           "requestContext": {
             "requestId": "<uuid:3>",
-            "functionArn": "arn:aws:lambda:<region>:111111111111:function:<resource:1>:$LATEST",
+            "functionArn": "arn:<partition>:lambda:<region>:111111111111:function:<resource:1>:$LATEST",
             "condition": "EventAgeExceeded",
             "approximateInvokeCount": 2
           },
@@ -533,18 +483,18 @@
     }
   },
   "tests/aws/services/lambda_/test_lambda_destinations.py::TestLambdaDestinationSqs::test_lambda_destination_default_retries": {
-    "recorded-date": "23-03-2023, 00:18:52",
+    "recorded-date": "21-03-2024, 12:24:09",
     "recorded-content": {
       "put_function_event_invoke_config": {
         "DestinationConfig": {
           "OnFailure": {
-            "Destination": "arn:aws:sqs:<region>:111111111111:<resource:1>"
+            "Destination": "arn:<partition>:sqs:<region>:111111111111:<resource:1>"
           },
           "OnSuccess": {
-            "Destination": "arn:aws:sqs:<region>:111111111111:<resource:1>"
+            "Destination": "arn:<partition>:sqs:<region>:111111111111:<resource:1>"
           }
         },
-        "FunctionArn": "arn:aws:lambda:<region>:111111111111:function:<resource:2>:$LATEST",
+        "FunctionArn": "arn:<partition>:lambda:<region>:111111111111:function:<resource:2>:$LATEST",
         "LastModified": "datetime",
         "ResponseMetadata": {
           "HTTPHeaders": {},
@@ -559,7 +509,7 @@
               "timestamp": "date",
               "requestContext": {
                 "requestId": "<uuid:1>",
-                "functionArn": "arn:aws:lambda:<region>:111111111111:function:<resource:2>:$LATEST",
+                "functionArn": "arn:<partition>:lambda:<region>:111111111111:function:<resource:2>:$LATEST",
                 "condition": "RetriesExhausted",
                 "approximateInvokeCount": 3
               },
@@ -576,7 +526,7 @@
                 "errorType": "Exception",
                 "requestId": "<uuid:1>",
                 "stackTrace": [
-                  "  File \"/var/task/handler.py\", line 54, in handler\n    raise Exception(\"Test exception (this is intentional)\")\n"
+                  "  File \"/var/task/handler.py\", line 55, in handler\n    raise Exception(\"Test exception (this is intentional)\")\n"
                 ]
               }
             },
@@ -593,28 +543,82 @@
     }
   },
   "tests/aws/services/lambda_/test_lambda_destinations.py::TestLambdaDestinationEventbridge::test_invoke_lambda_eventbridge": {
-    "recorded-date": "07-08-2023, 17:39:40",
+    "recorded-date": "19-11-2024, 08:49:47",
     "recorded-content": {
-      "filtered_message_event_bus_sqs": {
-        "Records": [
-          {
-            "messageId": "<message-id:1>",
-            "receiptHandle": "<receipt-handle:1>",
-            "body": "{\"hello\":\"world\",\"test\":\"abc\",\"val\":5,\"success\":true}",
-            "attributes": {
-              "ApproximateReceiveCount": "1",
-              "AWSTraceHeader": "trace-header",
-              "SentTimestamp": "timestamp",
-              "SenderId": "<sender-id:1>",
-              "ApproximateFirstReceiveTimestamp": "timestamp"
-            },
-            "messageAttributes": {},
-            "md5OfBody": "md5-of-body",
-            "eventSource": "aws:sqs",
-            "eventSourceARN": "arn:aws:sqs:<region>:111111111111:TestQueue",
-            "awsRegion": "<region>"
-          }
-        ]
+      "lambda_destination_event_bus_success": {
+        "account": "111111111111",
+        "detail": {
+          "requestContext": {
+            "approximateInvokeCount": 1,
+            "condition": "Success",
+            "functionArn": "arn:<partition>:lambda:<region>:111111111111:function:<input-fn-name>:$LATEST",
+            "requestId": "<uuid:1>"
+          },
+          "requestPayload": {
+            "mode": "success"
+          },
+          "responseContext": {
+            "executedVersion": "$LATEST",
+            "statusCode": 200
+          },
+          "responsePayload": {
+            "hello": "world",
+            "success": true,
+            "test": "abc",
+            "val": 5
+          },
+          "timestamp": "date",
+          "version": "1.0"
+        },
+        "detail-type": "Lambda Function Invocation Result - Success",
+        "id": "<uuid:2>",
+        "region": "<region>",
+        "resources": [
+          "arn:<partition>:events:<region>:111111111111:event-bus/<event-bus-name>",
+          "arn:<partition>:lambda:<region>:111111111111:function:<input-fn-name>:$LATEST"
+        ],
+        "source": "lambda",
+        "time": "date",
+        "version": "0"
+      },
+      "lambda_destination_event_bus_failure": {
+        "account": "111111111111",
+        "detail": {
+          "requestContext": {
+            "approximateInvokeCount": 1,
+            "condition": "RetriesExhausted",
+            "functionArn": "arn:<partition>:lambda:<region>:111111111111:function:<input-fn-name>:$LATEST",
+            "requestId": "<uuid:3>"
+          },
+          "requestPayload": {
+            "mode": "failure"
+          },
+          "responseContext": {
+            "executedVersion": "$LATEST",
+            "functionError": "Unhandled",
+            "statusCode": 200
+          },
+          "responsePayload": {
+            "errorMessage": "intentional failure!",
+            "errorType": "Exception",
+            "requestId": "<uuid:3>",
+            "stackTrace": [
+              "  File \"/var/task/index.py\", line 4, in handler\n    raise Exception(\"intentional failure!\")\n"
+            ]
+          },
+          "timestamp": "date",
+          "version": "1.0"
+        },
+        "detail-type": "Lambda Function Invocation Result - Failure",
+        "id": "<uuid:4>",
+        "region": "<region>",
+        "resources": [
+          "arn:<partition>:events:<region>:111111111111:event-bus/<event-bus-name>",
+          "arn:<partition>:lambda:<region>:111111111111:function:<input-fn-name>:$LATEST"
+        ],
+        "source": "lambda",
+        "time": "date",
+        "version": "0"
       }
     }
   }

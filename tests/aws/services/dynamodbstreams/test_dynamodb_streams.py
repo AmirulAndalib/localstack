@@ -1,13 +1,14 @@
 import json
 import re
 
+import aws_cdk as cdk
 import pytest
+from botocore.exceptions import ClientError
 
-from localstack.constants import TEST_AWS_REGION_NAME
-from localstack.services.dynamodbstreams.dynamodbstreams_api import get_kinesis_stream_name
+from localstack import config
 from localstack.testing.aws.util import is_aws_cloud
 from localstack.testing.pytest import markers
-from localstack.utils.aws import resources
+from localstack.utils.aws import arns, resources
 from localstack.utils.aws.arns import kinesis_stream_arn
 from localstack.utils.aws.queries import kinesis_get_latest_records
 from localstack.utils.strings import short_uid
@@ -18,10 +19,43 @@ PARTITION_KEY = "id"
 
 
 class TestDynamoDBStreams:
+    @markers.aws.validated
+    @markers.snapshot.skip_snapshot_verify(
+        paths=[
+            "$..Table.ProvisionedThroughput.LastDecreaseDateTime",
+            "$..Table.ProvisionedThroughput.LastIncreaseDateTime",
+            "$..Table.Replicas",
+        ]
+    )
+    def test_table_v2_stream(self, aws_client, infrastructure_setup, snapshot):
+        snapshot.add_transformer(snapshot.transform.dynamodb_streams_api())
+        snapshot.add_transformer(snapshot.transform.key_value("LatestStreamArn"), priority=-1)
+        snapshot.add_transformer(snapshot.transform.key_value("TableArn"), priority=-1)
+
+        infra = infrastructure_setup(namespace="TestTableV2Stream")
+        stack = cdk.Stack(infra.cdk_app, "TableV2StreamStack")
+
+        table = cdk.aws_dynamodb.TableV2(
+            stack,
+            "v2table",
+            partition_key=cdk.aws_dynamodb.Attribute(
+                name=PARTITION_KEY, type=cdk.aws_dynamodb.AttributeType.STRING
+            ),
+            removal_policy=cdk.RemovalPolicy.DESTROY,
+            dynamo_stream=cdk.aws_dynamodb.StreamViewType.NEW_AND_OLD_IMAGES,
+        )
+
+        cdk.CfnOutput(stack, "tableName", value=table.table_name)
+
+        with infra.provisioner(skip_teardown=False) as prov:
+            table_name = prov.get_stack_outputs(stack_name="TableV2StreamStack")["tableName"]
+            response = aws_client.dynamodb.describe_table(TableName=table_name)
+            snapshot.match("global-table-v2", response)
+
     @markers.aws.only_localstack
-    def test_stream_spec_and_region_replacement(self, aws_client):
+    def test_stream_spec_and_region_replacement(self, aws_client, region_name):
+        # our V1 and V2 implementation are pretty different, and we need different ways to test it
         ddbstreams = aws_client.dynamodbstreams
-        kinesis = aws_client.kinesis
         table_name = f"ddb-{short_uid()}"
         resources.create_dynamodb_table(
             table_name,
@@ -33,7 +67,7 @@ class TestDynamoDBStreams:
         table = aws_client.dynamodb.describe_table(TableName=table_name)["Table"]
 
         # assert ARN formats
-        expected_arn_prefix = f"arn:aws:dynamodb:{TEST_AWS_REGION_NAME}"
+        expected_arn_prefix = f"arn:aws:dynamodb:{region_name}"
         assert table["TableArn"].startswith(expected_arn_prefix)
         assert table["LatestStreamArn"].startswith(expected_arn_prefix)
 
@@ -41,14 +75,20 @@ class TestDynamoDBStreams:
         stream_tables = ddbstreams.list_streams(TableName="foo")["Streams"]
         assert len(stream_tables) == 0
 
+        if not config.DDB_STREAMS_PROVIDER_V2:
+            from localstack.services.dynamodbstreams.dynamodbstreams_api import (
+                get_kinesis_stream_name,
+            )
+
+            stream_name = get_kinesis_stream_name(table_name)
+            assert stream_name in aws_client.kinesis.list_streams()["StreamNames"]
+
         # assert stream has been created
         stream_tables = [
             s["TableName"] for s in ddbstreams.list_streams(TableName=table_name)["Streams"]
         ]
         assert table_name in stream_tables
         assert len(stream_tables) == 1
-        stream_name = get_kinesis_stream_name(table_name)
-        assert stream_name in kinesis.list_streams()["StreamNames"]
 
         # assert shard ID formats
         result = ddbstreams.describe_stream(StreamArn=table["LatestStreamArn"])["StreamDescription"]
@@ -59,15 +99,24 @@ class TestDynamoDBStreams:
         # clean up
         aws_client.dynamodb.delete_table(TableName=table_name)
 
-        def _assert_stream_deleted():
-            stream_tables = [s["TableName"] for s in ddbstreams.list_streams()["Streams"]]
-            assert table_name not in stream_tables
-            assert stream_name not in kinesis.list_streams()["StreamNames"]
+        def _assert_stream_disabled():
+            if config.DDB_STREAMS_PROVIDER_V2:
+                _result = aws_client.dynamodbstreams.describe_stream(
+                    StreamArn=table["LatestStreamArn"]
+                )
+                assert _result["StreamDescription"]["StreamStatus"] == "DISABLED"
+            else:
+                _stream_tables = [s["TableName"] for s in ddbstreams.list_streams()["Streams"]]
+                assert table_name not in _stream_tables
+                assert stream_name not in aws_client.kinesis.list_streams()["StreamNames"]
 
         # assert stream has been deleted
-        retry(_assert_stream_deleted, sleep=0.4, retries=5)
+        retry(_assert_stream_disabled, sleep=1, retries=20)
 
-    @pytest.mark.skip(reason="Flaky")
+    @pytest.mark.skipif(
+        condition=not is_aws_cloud() or config.DDB_STREAMS_PROVIDER_V2,
+        reason="Flaky, and not implemented yet on v2 implementation",
+    )
     @markers.aws.validated
     @markers.snapshot.skip_snapshot_verify(paths=["$..EncryptionType", "$..SizeBytes"])
     def test_enable_kinesis_streaming_destination(
@@ -137,3 +186,22 @@ class TestDynamoDBStreams:
         assert len(records[0]["PartitionKey"]) == 32
         assert int(records[0]["PartitionKey"], 16)
         snapshot.match("result-records", records)
+
+    @markers.aws.validated
+    def test_non_existent_stream(self, aws_client, region_name, account_id, snapshot):
+        table_name = f"non-existent-{short_uid()}"
+        snapshot.add_transformer(snapshot.transform.regex(table_name, "<table-name>"))
+        with pytest.raises(ClientError) as e:
+            bad_stream_name = arns.dynamodb_stream_arn(
+                account_id=account_id,
+                region_name=region_name,
+                latest_stream_label="2024-11-18T14:36:44.149",
+                table_name=table_name,
+            )
+            aws_client.dynamodbstreams.describe_stream(StreamArn=bad_stream_name)
+
+        snapshot.match("non-existent-stream", e.value.response)
+        message = e.value.response["Error"]["Message"]
+        # assert that we do not have ddblocal region and default account id
+        assert f":{account_id}:" in message
+        assert f":{region_name}" in message

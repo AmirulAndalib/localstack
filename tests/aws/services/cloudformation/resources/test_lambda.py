@@ -4,10 +4,13 @@ import os
 from io import BytesIO
 
 import pytest
+from localstack_snapshot.snapshots.transformer import SortingTransformer
 
+from localstack import config
 from localstack.aws.api.lambda_ import InvocationType, Runtime, State
+from localstack.testing.aws.util import in_default_partition
 from localstack.testing.pytest import markers
-from localstack.testing.snapshots.transformer import SortingTransformer
+from localstack.utils.aws.arns import get_partition
 from localstack.utils.common import short_uid
 from localstack.utils.files import load_file
 from localstack.utils.http import safe_requests
@@ -16,8 +19,6 @@ from localstack.utils.sync import retry, wait_until
 from localstack.utils.testutil import create_lambda_archive, get_lambda_log_events
 
 
-# TODO: Fix for new Lambda provider (was tested for old provider)
-@pytest.mark.skip(reason="not implemented yet in new provider")
 @markers.aws.validated
 def test_lambda_w_dynamodb_event_filter(deploy_cfn_template, aws_client):
     function_name = f"test-fn-{short_uid()}"
@@ -51,6 +52,106 @@ def test_lambda_w_dynamodb_event_filter(deploy_cfn_template, aws_client):
 
 
 @markers.snapshot.skip_snapshot_verify(
+    [
+        # TODO: Fix flaky ESM state mismatch upon update in LocalStack (expected Enabled, actual Disabled)
+        #  This might be a parity issue if AWS does rolling updates (i.e., never disables the ESM upon update).
+        "$..EventSourceMappings..State",
+    ]
+)
+@markers.aws.validated
+def test_lambda_w_dynamodb_event_filter_update(deploy_cfn_template, snapshot, aws_client):
+    snapshot.add_transformer(snapshot.transform.dynamodb_api())
+    snapshot.add_transformer(snapshot.transform.lambda_api())
+    function_name = f"test-fn-{short_uid()}"
+    table_name = f"ddb-tbl-{short_uid()}"
+    snapshot.add_transformer(snapshot.transform.regex(table_name, "<table_name>"))
+
+    stack = deploy_cfn_template(
+        template_path=os.path.join(
+            os.path.dirname(__file__), "../../../templates/lambda_dynamodb_filtering.yaml"
+        ),
+        parameters={
+            "FunctionName": function_name,
+            "TableName": table_name,
+            "Filter": '{"eventName": ["DELETE"]}',
+        },
+    )
+    source_mappings = aws_client.lambda_.list_event_source_mappings(FunctionName=function_name)
+    snapshot.match("source_mappings", source_mappings)
+
+    deploy_cfn_template(
+        template_path=os.path.join(
+            os.path.dirname(__file__), "../../../templates/lambda_dynamodb_filtering.yaml"
+        ),
+        parameters={
+            "FunctionName": function_name,
+            "TableName": table_name,
+            "Filter": '{"eventName": ["MODIFY"]}',
+        },
+        stack_name=stack.stack_name,
+        is_update=True,
+    )
+
+    source_mappings = aws_client.lambda_.list_event_source_mappings(FunctionName=function_name)
+    snapshot.match("updated_source_mappings", source_mappings)
+
+
+@markers.aws.validated
+def test_update_lambda_function(s3_create_bucket, deploy_cfn_template, aws_client):
+    function_name = f"lambda-{short_uid()}"
+    stack = deploy_cfn_template(
+        template_path=os.path.join(
+            os.path.dirname(__file__), "../../../templates/lambda_function_update.yml"
+        ),
+        parameters={"Environment": "ORIGINAL", "FunctionName": function_name},
+    )
+
+    response = aws_client.lambda_.get_function(FunctionName=function_name)
+    assert response["Configuration"]["Environment"]["Variables"]["TEST"] == "ORIGINAL"
+
+    deploy_cfn_template(
+        stack_name=stack.stack_name,
+        is_update=True,
+        template_path=os.path.join(
+            os.path.dirname(__file__), "../../../templates/lambda_function_update.yml"
+        ),
+        parameters={"Environment": "UPDATED", "FunctionName": function_name},
+    )
+
+    response = aws_client.lambda_.get_function(FunctionName=function_name)
+    assert response["Configuration"]["Environment"]["Variables"]["TEST"] == "UPDATED"
+
+
+@markers.aws.validated
+def test_update_lambda_function_name(s3_create_bucket, deploy_cfn_template, aws_client):
+    function_name_1 = f"lambda-{short_uid()}"
+    function_name_2 = f"lambda-{short_uid()}"
+    stack = deploy_cfn_template(
+        template_path=os.path.join(
+            os.path.dirname(__file__), "../../../templates/lambda_function_update.yml"
+        ),
+        parameters={"FunctionName": function_name_1},
+    )
+
+    function_name = stack.outputs["LambdaName"]
+    response = aws_client.lambda_.get_function(FunctionName=function_name_1)
+    assert response["Configuration"]["Environment"]["Variables"]["TEST"] == "ORIGINAL"
+
+    deploy_cfn_template(
+        stack_name=stack.stack_name,
+        is_update=True,
+        template_path=os.path.join(
+            os.path.dirname(__file__), "../../../templates/lambda_function_update.yml"
+        ),
+        parameters={"FunctionName": function_name_2},
+    )
+    with pytest.raises(aws_client.lambda_.exceptions.ResourceNotFoundException):
+        aws_client.lambda_.get_function(FunctionName=function_name)
+
+    aws_client.lambda_.get_function(FunctionName=function_name_2)
+
+
+@markers.snapshot.skip_snapshot_verify(
     paths=[
         "$..Metadata",
         "$..DriftInformation",
@@ -62,6 +163,7 @@ def test_lambda_w_dynamodb_event_filter(deploy_cfn_template, aws_client):
         "$..access-control-expose-headers",
         "$..server",
         "$..content-length",
+        "$..InvokeMode",
     ]
 )
 @markers.aws.validated
@@ -151,16 +253,16 @@ def test_lambda_alias(deploy_cfn_template, snapshot, aws_client):
     snapshot.match("Alias", alias)
 
 
+@pytest.mark.skipif(
+    not in_default_partition(), reason="Test not applicable in non-default partitions"
+)
 @markers.aws.validated
-@markers.snapshot.skip_snapshot_verify(paths=["$..DestinationConfig"])
 def test_lambda_code_signing_config(deploy_cfn_template, snapshot, account_id, aws_client):
     snapshot.add_transformer(snapshot.transform.cloudformation_api())
     snapshot.add_transformer(snapshot.transform.lambda_api())
     snapshot.add_transformer(SortingTransformer("StackResources", lambda x: x["LogicalResourceId"]))
 
-    signer_arn = (
-        f"arn:aws:signer:{aws_client.lambda_.meta.region_name}:{account_id}:/signing-profiles/test"
-    )
+    signer_arn = f"arn:{get_partition(aws_client.lambda_.meta.region_name)}:signer:{aws_client.lambda_.meta.region_name}:{account_id}:/signing-profiles/test"
 
     stack = deploy_cfn_template(
         template_path=os.path.join(
@@ -198,7 +300,12 @@ def test_event_invoke_config(deploy_cfn_template, snapshot, aws_client):
     snapshot.match("event_invoke_config", event_invoke_config)
 
 
-@markers.snapshot.skip_snapshot_verify(paths=["$..CodeSize"])
+@markers.snapshot.skip_snapshot_verify(
+    paths=[
+        # Lambda ZIP flaky in CI
+        "$..CodeSize",
+    ]
+)
 @markers.aws.validated
 def test_lambda_version(deploy_cfn_template, snapshot, aws_client):
     snapshot.add_transformer(snapshot.transform.cloudformation_api())
@@ -255,6 +362,82 @@ def test_lambda_cfn_run(deploy_cfn_template, aws_client):
     aws_client.lambda_.invoke(FunctionName=fn_name, LogType="Tail", Payload=b"{}")
 
 
+@markers.aws.only_localstack(reason="This is functionality specific to Localstack")
+def test_lambda_cfn_run_with_empty_string_replacement_deny_list(
+    deploy_cfn_template, aws_client, monkeypatch
+):
+    """
+    deploys the same lambda with an empty CFN string deny list, testing that it behaves as expected
+    (i.e. the URLs in the deny list are modified)
+    """
+    monkeypatch.setattr(config, "CFN_STRING_REPLACEMENT_DENY_LIST", [])
+    deployment = deploy_cfn_template(
+        template_path=os.path.join(
+            os.path.dirname(__file__),
+            "../../../templates/cfn_lambda_with_external_api_paths_in_env_vars.yaml",
+        ),
+        max_wait=120,
+    )
+    function = aws_client.lambda_.get_function(FunctionName=deployment.outputs["FunctionName"])
+    function_env_variables = function["Configuration"]["Environment"]["Variables"]
+    # URLs that match regex to capture AWS URLs gets Localstack port appended - non-matching URLs remain unchanged.
+    assert function_env_variables["API_URL_1"] == "https://api.example.com"
+    assert (
+        function_env_variables["API_URL_2"]
+        == "https://storage.execute-api.amazonaws.com:4566/test-resource"
+    )
+    assert (
+        function_env_variables["API_URL_3"]
+        == "https://reporting.execute-api.amazonaws.com:4566/test-resource"
+    )
+    assert (
+        function_env_variables["API_URL_4"]
+        == "https://blockchain.execute-api.amazonaws.com:4566/test-resource"
+    )
+
+
+@markers.aws.only_localstack(reason="This is functionality specific to Localstack")
+def test_lambda_cfn_run_with_non_empty_string_replacement_deny_list(
+    deploy_cfn_template, aws_client, monkeypatch
+):
+    """
+    deploys the same lambda with a non-empty CFN string deny list configurations, testing that it behaves as expected
+    (i.e. the URLs in the deny list are not modified)
+    """
+    monkeypatch.setattr(
+        config,
+        "CFN_STRING_REPLACEMENT_DENY_LIST",
+        [
+            "https://storage.execute-api.us-east-2.amazonaws.com/test-resource",
+            "https://reporting.execute-api.us-east-1.amazonaws.com/test-resource",
+        ],
+    )
+    deployment = deploy_cfn_template(
+        template_path=os.path.join(
+            os.path.dirname(__file__),
+            "../../../templates/cfn_lambda_with_external_api_paths_in_env_vars.yaml",
+        ),
+        max_wait=120,
+    )
+    function = aws_client.lambda_.get_function(FunctionName=deployment.outputs["FunctionName"])
+    function_env_variables = function["Configuration"]["Environment"]["Variables"]
+    # URLs that match regex to capture AWS URLs but are explicitly in the deny list, don't get modified -
+    # non-matching URLs remain unchanged.
+    assert function_env_variables["API_URL_1"] == "https://api.example.com"
+    assert (
+        function_env_variables["API_URL_2"]
+        == "https://storage.execute-api.us-east-2.amazonaws.com/test-resource"
+    )
+    assert (
+        function_env_variables["API_URL_3"]
+        == "https://reporting.execute-api.us-east-1.amazonaws.com/test-resource"
+    )
+    assert (
+        function_env_variables["API_URL_4"]
+        == "https://blockchain.execute-api.amazonaws.com:4566/test-resource"
+    )
+
+
 @pytest.mark.skip(reason="broken/notimplemented")
 @markers.aws.validated
 def test_lambda_vpc(deploy_cfn_template, aws_client):
@@ -279,7 +462,6 @@ def test_lambda_vpc(deploy_cfn_template, aws_client):
     aws_client.lambda_.invoke(FunctionName=fn_name, LogType="Tail", Payload=b"{}")
 
 
-@pytest.mark.xfail(reason="fails/times out with new provider")  # FIXME
 @markers.aws.validated
 def test_update_lambda_permissions(deploy_cfn_template, aws_client):
     stack = deploy_cfn_template(
@@ -330,6 +512,40 @@ def test_multiple_lambda_permissions_for_singlefn(deploy_cfn_template, snapshot,
     # load the policy json, so we can properly snapshot it
     policy["Policy"] = json.loads(policy["Policy"])
     snapshot.match("policy", policy)
+
+
+@markers.aws.validated
+@markers.snapshot.skip_snapshot_verify(
+    paths=[
+        # Added by CloudFormation
+        "$..Tags.'aws:cloudformation:logical-id'",
+        "$..Tags.'aws:cloudformation:stack-id'",
+        "$..Tags.'aws:cloudformation:stack-name'",
+    ]
+)
+def test_lambda_function_tags(deploy_cfn_template, aws_client, snapshot):
+    snapshot.add_transformer(snapshot.transform.cloudformation_api())
+    snapshot.add_transformer(snapshot.transform.lambda_api())
+    snapshot.add_transformer(snapshot.transform.key_value("CodeSha256"))
+
+    function_name = f"fn-{short_uid()}"
+    environment = f"dev-{short_uid()}"
+    snapshot.add_transformer(snapshot.transform.regex(environment, "<environment>"))
+
+    deployment = deploy_cfn_template(
+        template_path=os.path.join(
+            os.path.dirname(__file__),
+            "../../../templates/cfn_lambda_with_tags.yml",
+        ),
+        parameters={
+            "FunctionName": function_name,
+            "Environment": environment,
+        },
+    )
+    snapshot.add_transformer(snapshot.transform.regex(deployment.stack_name, "<stack-name>"))
+
+    get_function_result = aws_client.lambda_.get_function(FunctionName=function_name)
+    snapshot.match("get_function_result", get_function_result)
 
 
 class TestCfnLambdaIntegrations:
@@ -396,22 +612,18 @@ class TestCfnLambdaIntegrations:
             log_events = aws_client.logs.filter_log_events(logGroupName=f"/aws/lambda/{fn_name}")[
                 "events"
             ]
-            return any([msg in e["message"] for e in log_events])
+            return any(msg in e["message"] for e in log_events)
 
         assert wait_until(wait_logs)
 
     @markers.snapshot.skip_snapshot_verify(
         paths=[
-            "$..MaximumRetryAttempts",
-            "$..ParallelizationFactor",
-            "$..StateTransitionReason",
             # Lambda
             "$..Tags",
-            "$..Configuration.CodeSize",
-            "$..Configuration.Layers",
+            "$..Configuration.CodeSize",  # Lambda ZIP flaky in CI
             # SQS
             "$..Attributes.SqsManagedSseEnabled",
-            # # IAM
+            # IAM
             "$..PolicyNames",
             "$..PolicyName",
             "$..Role.Description",
@@ -517,7 +729,7 @@ class TestCfnLambdaIntegrations:
             log_events = aws_client.logs.filter_log_events(logGroupName=f"/aws/lambda/{fn_name}")[
                 "events"
             ]
-            return any([msg in e["message"] for e in log_events])
+            return any(msg in e["message"] for e in log_events)
 
         assert wait_until(wait_logs)
 
@@ -525,12 +737,47 @@ class TestCfnLambdaIntegrations:
         with pytest.raises(aws_client.lambda_.exceptions.ResourceNotFoundException):
             aws_client.lambda_.get_event_source_mapping(UUID=esm_id)
 
+    # TODO: consider moving into the dedicated DynamoDB => Lambda tests because it tests the filtering functionality rather than CloudFormation (just using CF to deploy resources)
+    #  tests.aws.services.lambda_.test_lambda_integration_dynamodbstreams.TestDynamoDBEventSourceMapping.test_dynamodb_event_filter
+    @markers.aws.validated
+    def test_lambda_dynamodb_event_filter(
+        self, dynamodb_wait_for_table_active, deploy_cfn_template, aws_client, monkeypatch
+    ):
+        function_name = f"test-fn-{short_uid()}"
+        table_name = f"ddb-tbl-{short_uid()}"
+
+        item_to_put = {
+            "PK": {"S": "person1"},
+            "SK": {"S": "details"},
+            "name": {"S": "John Doe"},
+        }
+
+        deploy_cfn_template(
+            template_path=os.path.join(
+                os.path.dirname(__file__), "../../../templates/lambda_dynamodb_event_filter.yaml"
+            ),
+            parameters={
+                "FunctionName": function_name,
+                "TableName": table_name,
+                "Filter": '{"dynamodb": {"NewImage": {"homemade": {"S": [{"exists": false}]}}}}',
+            },
+        )
+        aws_client.dynamodb.put_item(TableName=table_name, Item=item_to_put)
+
+        def _send_events():
+            log_events = aws_client.logs.filter_log_events(
+                logGroupName=f"/aws/lambda/{function_name}"
+            )["events"]
+            return any("Hello world!" in e["message"] for e in log_events)
+
+        sleep = 10 if os.getenv("TEST_TARGET") == "AWS_CLOUD" else 1
+        assert wait_until(_send_events, wait=sleep, max_retries=50)
+
     @markers.snapshot.skip_snapshot_verify(
         paths=[
             # Lambda
             "$..Tags",
-            "$..Configuration.CodeSize",
-            "$..Configuration.Layers",
+            "$..Configuration.CodeSize",  # Lambda ZIP flaky in CI
             # IAM
             "$..PolicyNames",
             "$..policies..PolicyName",
@@ -544,12 +791,6 @@ class TestCfnLambdaIntegrations:
             "$..Table.Replicas",
             # stream result
             "$..StreamDescription.CreationRequestDateTime",
-            # event source mapping
-            "$..BisectBatchOnFunctionError",
-            "$..DestinationConfig",
-            "$..LastProcessingResult",
-            "$..MaximumRecordAgeInSeconds",
-            "$..TumblingWindowInSeconds",
         ]
     )
     @markers.aws.validated
@@ -660,7 +901,7 @@ class TestCfnLambdaIntegrations:
             log_events = aws_client.logs.filter_log_events(logGroupName=f"/aws/lambda/{fn_name}")[
                 "events"
             ]
-            return any([msg in e["message"] for e in log_events])
+            return any(msg in e["message"] for e in log_events)
 
         assert wait_until(wait_logs)
 
@@ -672,16 +913,9 @@ class TestCfnLambdaIntegrations:
         paths=[
             "$..Role.Description",
             "$..Role.MaxSessionDuration",
-            "$..BisectBatchOnFunctionError",
-            "$..DestinationConfig",
-            "$..LastProcessingResult",
-            "$..MaximumRecordAgeInSeconds",
             "$..Configuration.CodeSize",
             "$..Tags",
-            "$..StreamDescription.StreamModeDetails",
-            "$..Configuration.Layers",
-            "$..TumblingWindowInSeconds",
-            # flaky because we currently don't actually wait in cloudformation for it to be active
+            # TODO: wait for ESM to become active in CloudFormation to mitigate these flaky fields
             "$..Configuration.LastUpdateStatus",
             "$..Configuration.State",
             "$..Configuration.StateReason",
@@ -794,7 +1028,7 @@ class TestCfnLambdaIntegrations:
             log_events = aws_client.logs.filter_log_events(logGroupName=f"/aws/lambda/{fn_name}")[
                 "events"
             ]
-            return any([data_msg in e["message"] for e in log_events])
+            return any(data_msg in e["message"] for e in log_events)
 
         assert wait_until(wait_logs)
 
@@ -837,11 +1071,11 @@ class TestCfnLambdaDestinations:
 
     """
 
-    @pytest.mark.skip(reason="not supported atm and test needs further work")
     @pytest.mark.parametrize(
         ["on_success", "on_failure"],
         [
             ("sqs", "sqs"),
+            # TODO: test needs further work
             # ("sns", "sns"),
             # ("lambda", "lambda"),
             # ("eventbridge", "eventbridge")
@@ -936,7 +1170,7 @@ def test_python_lambda_code_deployed_via_s3(deploy_cfn_template, aws_client, s3_
             os.path.join(os.path.dirname(__file__), "../../lambda_/functions/lambda_echo.py")
         ),
         get_content=True,
-        runtime=Runtime.python3_10,
+        runtime=Runtime.python3_12,
     )
     aws_client.s3.upload_fileobj(BytesIO(zip_file), s3_bucket, bucket_key)
 
@@ -955,7 +1189,7 @@ def test_python_lambda_code_deployed_via_s3(deploy_cfn_template, aws_client, s3_
     invocation_result = aws_client.lambda_.invoke(
         FunctionName=function_name, Payload=json.dumps({"hello": "world"})
     )
-    payload = json.loads(to_str(invocation_result["Payload"].read()))
+    payload = json.load(invocation_result["Payload"])
     assert payload == {"hello": "world"}
     assert invocation_result["StatusCode"] == 200
 
@@ -980,7 +1214,7 @@ def test_lambda_cfn_dead_letter_config_async_invocation(
             )
         ),
         get_content=True,
-        runtime=Runtime.python3_10,
+        runtime=Runtime.python3_12,
     )
     aws_client.s3.upload_fileobj(BytesIO(zip_file), s3_bucket, bucket_key)
 
@@ -1003,3 +1237,30 @@ def test_lambda_cfn_dead_letter_config_async_invocation(
 
     retry(check_dlq_message, response=response, retries=5, sleep=2.5)
     snapshot.match("failed-async-lambda", response)
+
+
+@markers.aws.validated
+def test_lambda_layer_crud(deploy_cfn_template, aws_client, s3_bucket, snapshot):
+    snapshot.add_transformers_list(
+        [snapshot.transform.key_value("LambdaName"), snapshot.transform.key_value("layer-name")]
+    )
+
+    layer_name = f"layer-{short_uid()}"
+    snapshot.match("layer-name", layer_name)
+
+    bucket_key = "layer.zip"
+    zip_file = create_lambda_archive(
+        "hello",
+        get_content=True,
+        runtime=Runtime.python3_12,
+        file_name="hello.txt",
+    )
+    aws_client.s3.upload_fileobj(BytesIO(zip_file), s3_bucket, bucket_key)
+
+    deployment = deploy_cfn_template(
+        template_path=os.path.join(
+            os.path.dirname(__file__), "../../../templates/lambda_layer_version.yml"
+        ),
+        parameters={"LayerBucket": s3_bucket, "LayerName": layer_name},
+    )
+    snapshot.match("cfn-output", deployment.outputs)

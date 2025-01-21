@@ -1,7 +1,11 @@
 from enum import Enum
 from typing import Dict
 
-from localstack.services.apigateway.helpers import host_based_url, path_based_url
+from localstack.services.apigateway.helpers import (
+    host_based_url,
+    localstack_path_based_url,
+    path_based_url,
+)
 from localstack.testing.aws.util import is_aws_cloud
 from localstack.utils.aws import aws_stack
 
@@ -195,14 +199,25 @@ def delete_cognito_user_pool_client(cognito_idp, **kwargs):
 class UrlType(Enum):
     HOST_BASED = 0
     PATH_BASED = 1
+    LS_PATH_BASED = 2
 
 
 def api_invoke_url(
-    api_id: str, stage: str = "", path: str = "/", url_type: UrlType = UrlType.HOST_BASED
+    api_id: str,
+    stage: str = "",
+    path: str = "/",
+    url_type: UrlType = UrlType.HOST_BASED,
+    region: str = "",
 ):
     if is_aws_cloud():
+        if not region:
+            region = aws_stack.get_boto3_region()
         stage = f"/{stage}" if stage else ""
-        return f"https://{api_id}.execute-api.{aws_stack.get_boto3_region()}.amazonaws.com{stage}{path}"
+        return f"https://{api_id}.execute-api.{region}.amazonaws.com{stage}{path}"
+
     if url_type == UrlType.HOST_BASED:
         return host_based_url(api_id, stage_name=stage, path=path)
-    return path_based_url(api_id, stage_name=stage, path=path)
+    elif url_type == UrlType.PATH_BASED:
+        return path_based_url(api_id, stage_name=stage, path=path)
+    else:
+        return localstack_path_based_url(api_id, stage_name=stage, path=path)

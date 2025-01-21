@@ -1,6 +1,6 @@
 {
   "tests/aws/services/apigateway/test_apigateway_extended.py::test_export_swagger_openapi[TEST_IMPORT_PETSTORE_SWAGGER]": {
-    "recorded-date": "15-09-2023, 04:27:47",
+    "recorded-date": "15-04-2024, 21:43:25",
     "recorded-content": {
       "import-api": {
         "apiKeySource": "HEADER",
@@ -14,6 +14,7 @@
         },
         "id": "<api-id:1>",
         "name": "PetStore",
+        "rootResourceId": "<root-resource-id:1>",
         "ResponseMetadata": {
           "HTTPHeaders": {},
           "HTTPStatusCode": 201
@@ -309,6 +310,7 @@
                   }
                 },
                 "x-amazon-apigateway-integration": {
+                  "type": "mock",
                   "responses": {
                     "default": {
                       "statusCode": "200",
@@ -323,8 +325,7 @@
                   "requestTemplates": {
                     "application/json": "{\"statusCode\": 200}"
                   },
-                  "passthroughBehavior": "when_no_match",
-                  "type": "mock"
+                  "passthroughBehavior": "when_no_match"
                 }
               }
             },
@@ -361,8 +362,9 @@
                   }
                 },
                 "x-amazon-apigateway-integration": {
+                  "type": "http",
                   "httpMethod": "GET",
-                  "uri": "http://petstore.execute-api.eu-west-1.amazonaws.com/petstore/pets",
+                  "uri": "http://petstore.execute-api.<region>.amazonaws.com/petstore/pets",
                   "responses": {
                     "default": {
                       "statusCode": "200",
@@ -375,8 +377,7 @@
                     "integration.request.querystring.page": "method.request.querystring.page",
                     "integration.request.querystring.type": "method.request.querystring.type"
                   },
-                  "passthroughBehavior": "when_no_match",
-                  "type": "http"
+                  "passthroughBehavior": "when_no_match"
                 }
               },
               "post": {
@@ -411,8 +412,9 @@
                   }
                 },
                 "x-amazon-apigateway-integration": {
+                  "type": "http",
                   "httpMethod": "POST",
-                  "uri": "http://petstore.execute-api.eu-west-1.amazonaws.com/petstore/pets",
+                  "uri": "http://petstore.execute-api.<region>.amazonaws.com/petstore/pets",
                   "responses": {
                     "default": {
                       "statusCode": "200",
@@ -421,8 +423,7 @@
                       }
                     }
                   },
-                  "passthroughBehavior": "when_no_match",
-                  "type": "http"
+                  "passthroughBehavior": "when_no_match"
                 }
               },
               "options": {
@@ -452,6 +453,7 @@
                   }
                 },
                 "x-amazon-apigateway-integration": {
+                  "type": "mock",
                   "responses": {
                     "default": {
                       "statusCode": "200",
@@ -465,8 +467,7 @@
                   "requestTemplates": {
                     "application/json": "{\"statusCode\": 200}"
                   },
-                  "passthroughBehavior": "when_no_match",
-                  "type": "mock"
+                  "passthroughBehavior": "when_no_match"
                 }
               }
             },
@@ -498,8 +499,9 @@
                   }
                 },
                 "x-amazon-apigateway-integration": {
+                  "type": "http",
                   "httpMethod": "GET",
-                  "uri": "http://petstore.execute-api.eu-west-1.amazonaws.com/petstore/pets/{petId}",
+                  "uri": "http://petstore.execute-api.<region>.amazonaws.com/petstore/pets/{petId}",
                   "responses": {
                     "default": {
                       "statusCode": "200",
@@ -511,8 +513,7 @@
                   "requestParameters": {
                     "integration.request.path.petId": "method.request.path.petId"
                   },
-                  "passthroughBehavior": "when_no_match",
-                  "type": "http"
+                  "passthroughBehavior": "when_no_match"
                 }
               },
               "options": {
@@ -550,6 +551,7 @@
                   }
                 },
                 "x-amazon-apigateway-integration": {
+                  "type": "mock",
                   "responses": {
                     "default": {
                       "statusCode": "200",
@@ -563,8 +565,7 @@
                   "requestTemplates": {
                     "application/json": "{\"statusCode\": 200}"
                   },
-                  "passthroughBehavior": "when_no_match",
-                  "type": "mock"
+                  "passthroughBehavior": "when_no_match"
                 }
               }
             }
@@ -637,7 +638,7 @@
     }
   },
   "tests/aws/services/apigateway/test_apigateway_extended.py::test_export_swagger_openapi[TEST_IMPORT_PETS]": {
-    "recorded-date": "15-09-2023, 04:27:55",
+    "recorded-date": "15-04-2024, 21:43:56",
     "recorded-content": {
       "import-api": {
         "apiKeySource": "HEADER",
@@ -650,6 +651,7 @@
         },
         "id": "<api-id:1>",
         "name": "Simple PetStore (Swagger)",
+        "rootResourceId": "<root-resource-id:1>",
         "version": "1.0.0",
         "ResponseMetadata": {
           "HTTPHeaders": {},
@@ -780,7 +782,7 @@
     }
   },
   "tests/aws/services/apigateway/test_apigateway_extended.py::test_export_oas30_openapi[TEST_IMPORT_PETSTORE_SWAGGER]": {
-    "recorded-date": "15-09-2023, 04:55:14",
+    "recorded-date": "15-04-2024, 21:45:03",
     "recorded-content": {
       "import-api": {
         "apiKeySource": "HEADER",
@@ -794,6 +796,7 @@
         },
         "id": "<api-id:1>",
         "name": "PetStore",
+        "rootResourceId": "<root-resource-id:1>",
         "ResponseMetadata": {
           "HTTPHeaders": {},
           "HTTPStatusCode": 201
@@ -1138,7 +1141,7 @@
                 },
                 "x-amazon-apigateway-integration": {
                   "httpMethod": "GET",
-                  "uri": "http://petstore.execute-api.eu-west-1.amazonaws.com/petstore/pets",
+                  "uri": "http://petstore.execute-api.<region>.amazonaws.com/petstore/pets",
                   "responses": {
                     "default": {
                       "statusCode": "200",
@@ -1188,7 +1191,7 @@
                 },
                 "x-amazon-apigateway-integration": {
                   "httpMethod": "POST",
-                  "uri": "http://petstore.execute-api.eu-west-1.amazonaws.com/petstore/pets",
+                  "uri": "http://petstore.execute-api.<region>.amazonaws.com/petstore/pets",
                   "responses": {
                     "default": {
                       "statusCode": "200",
@@ -1284,7 +1287,7 @@
                 },
                 "x-amazon-apigateway-integration": {
                   "httpMethod": "GET",
-                  "uri": "http://petstore.execute-api.eu-west-1.amazonaws.com/petstore/pets/{petId}",
+                  "uri": "http://petstore.execute-api.<region>.amazonaws.com/petstore/pets/{petId}",
                   "responses": {
                     "default": {
                       "statusCode": "200",
@@ -1465,7 +1468,7 @@
     }
   },
   "tests/aws/services/apigateway/test_apigateway_extended.py::test_export_oas30_openapi[TEST_IMPORT_PETS]": {
-    "recorded-date": "15-09-2023, 04:55:22",
+    "recorded-date": "15-04-2024, 21:45:07",
     "recorded-content": {
       "import-api": {
         "apiKeySource": "HEADER",
@@ -1478,6 +1481,7 @@
         },
         "id": "<api-id:1>",
         "name": "Simple PetStore (Swagger)",
+        "rootResourceId": "<root-resource-id:1>",
         "version": "1.0.0",
         "ResponseMetadata": {
           "HTTPHeaders": {},
@@ -1620,6 +1624,381 @@
         },
         "contentDisposition": "attachment; filename=\"oas30_1.0.0.json\"",
         "contentType": "application/octet-stream",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      }
+    }
+  },
+  "tests/aws/services/apigateway/test_apigateway_extended.py::TestApigatewayApiKeysCrud::test_get_api_keys": {
+    "recorded-date": "10-10-2024, 18:53:36",
+    "recorded-content": {
+      "get-api-keys": {
+        "items": [],
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "create-api-key": {
+        "createdDate": "datetime",
+        "enabled": false,
+        "id": "<id:1>",
+        "lastUpdatedDate": "datetime",
+        "name": "<name:1>",
+        "stageKeys": [],
+        "value": "<value:1>",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 201
+        }
+      },
+      "get-api-keys-after-create-1": {
+        "items": [
+          {
+            "createdDate": "datetime",
+            "enabled": false,
+            "id": "<id:1>",
+            "lastUpdatedDate": "datetime",
+            "name": "<name:1>",
+            "stageKeys": []
+          }
+        ],
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "get-api-keys-wrong-name-query": {
+        "items": [],
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "get-api-keys-prefix-name-query": {
+        "items": [
+          {
+            "createdDate": "datetime",
+            "enabled": false,
+            "id": "<id:1>",
+            "lastUpdatedDate": "datetime",
+            "name": "<name:1>",
+            "stageKeys": []
+          }
+        ],
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "get-api-keys-prefix-name-query-cased": {
+        "items": [],
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "get-api-keys-postfix-name-query": {
+        "items": [],
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "get-api-keys-infix-name-query": {
+        "items": [],
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "create-api-key-2": {
+        "createdDate": "datetime",
+        "enabled": false,
+        "id": "<id:2>",
+        "lastUpdatedDate": "datetime",
+        "name": "<name:2>",
+        "stageKeys": [],
+        "value": "<value:2>",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 201
+        }
+      },
+      "get-api-keys-after-create-2": {
+        "items": [
+          {
+            "createdDate": "datetime",
+            "enabled": false,
+            "id": "<id:2>",
+            "lastUpdatedDate": "datetime",
+            "name": "<name:2>",
+            "stageKeys": []
+          },
+          {
+            "createdDate": "datetime",
+            "enabled": false,
+            "id": "<id:1>",
+            "lastUpdatedDate": "datetime",
+            "name": "<name:1>",
+            "stageKeys": []
+          }
+        ],
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "get-api-keys-name-query": {
+        "items": [
+          {
+            "createdDate": "datetime",
+            "enabled": false,
+            "id": "<id:2>",
+            "lastUpdatedDate": "datetime",
+            "name": "<name:2>",
+            "stageKeys": []
+          }
+        ],
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "get-api-keys-prefix-name-query-2": {
+        "items": [
+          {
+            "createdDate": "datetime",
+            "enabled": false,
+            "id": "<id:2>",
+            "lastUpdatedDate": "datetime",
+            "name": "<name:2>",
+            "stageKeys": []
+          },
+          {
+            "createdDate": "datetime",
+            "enabled": false,
+            "id": "<id:1>",
+            "lastUpdatedDate": "datetime",
+            "name": "<name:1>",
+            "stageKeys": []
+          }
+        ],
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "get-apis-keys-pagination": {
+        "items": [
+          {
+            "createdDate": "datetime",
+            "enabled": false,
+            "id": "<id:2>",
+            "lastUpdatedDate": "datetime",
+            "name": "<name:2>",
+            "stageKeys": []
+          }
+        ],
+        "position": "<position:1>",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "get-apis-keys-pagination-2": {
+        "items": [
+          {
+            "createdDate": "datetime",
+            "enabled": false,
+            "id": "<id:1>",
+            "lastUpdatedDate": "datetime",
+            "name": "<name:1>",
+            "stageKeys": []
+          }
+        ],
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      }
+    }
+  },
+  "tests/aws/services/apigateway/test_apigateway_extended.py::TestApigatewayApiKeysCrud::test_get_usage_plan_api_keys": {
+    "recorded-date": "10-10-2024, 18:54:42",
+    "recorded-content": {
+      "get-api-keys": {
+        "items": [],
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "create-api-key": {
+        "createdDate": "datetime",
+        "enabled": false,
+        "id": "<id:1>",
+        "lastUpdatedDate": "datetime",
+        "name": "<name:1>",
+        "stageKeys": [],
+        "value": "<value:1>",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 201
+        }
+      },
+      "create-api-key-2": {
+        "createdDate": "datetime",
+        "enabled": false,
+        "id": "<id:1>",
+        "lastUpdatedDate": "datetime",
+        "name": "<name:1>",
+        "stageKeys": [],
+        "value": "<value:1>",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 201
+        }
+      },
+      "get-api-keys-after-create-1": {
+        "items": [
+          {
+            "createdDate": "datetime",
+            "enabled": false,
+            "id": "<id:2>",
+            "lastUpdatedDate": "datetime",
+            "name": "<name:2>",
+            "stageKeys": []
+          },
+          {
+            "createdDate": "datetime",
+            "enabled": false,
+            "id": "<id:1>",
+            "lastUpdatedDate": "datetime",
+            "name": "<name:1>",
+            "stageKeys": []
+          }
+        ],
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "create-usage-plan": {
+        "apiStages": [],
+        "id": "<id:3>",
+        "name": "<name:3>",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 201
+        }
+      },
+      "get-up-keys-before-create": {
+        "items": [],
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "create-up-key": {
+        "id": "<id:1>",
+        "name": "<name:1>",
+        "type": "API_KEY",
+        "value": "<value:1>",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 201
+        }
+      },
+      "create-up-key-2": {
+        "id": "<id:2>",
+        "name": "<name:2>",
+        "type": "API_KEY",
+        "value": "<value:2>",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 201
+        }
+      },
+      "get-up-keys": {
+        "items": [
+          {
+            "id": "<id:2>",
+            "name": "<name:2>",
+            "type": "API_KEY",
+            "value": "<value:2>"
+          },
+          {
+            "id": "<id:1>",
+            "name": "<name:1>",
+            "type": "API_KEY",
+            "value": "<value:1>"
+          }
+        ],
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "get-up-keys-name-query": {
+        "items": [
+          {
+            "id": "<id:2>",
+            "name": "<name:2>",
+            "type": "API_KEY",
+            "value": "<value:2>"
+          },
+          {
+            "id": "<id:1>",
+            "name": "<name:1>",
+            "type": "API_KEY",
+            "value": "<value:1>"
+          }
+        ],
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "get-up-keys-name-query-cased": {
+        "items": [],
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "get-up-keys-name-query-key-name": {
+        "items": [
+          {
+            "id": "<id:1>",
+            "name": "<name:1>",
+            "type": "API_KEY",
+            "value": "<value:1>"
+          }
+        ],
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "get-up-keys-bad-query": {
+        "items": [],
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "get-up-keys-after-delete": {
+        "items": [],
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "get-up-keys-bad-usage-plan": {
+        "items": [],
         "ResponseMetadata": {
           "HTTPHeaders": {},
           "HTTPStatusCode": 200

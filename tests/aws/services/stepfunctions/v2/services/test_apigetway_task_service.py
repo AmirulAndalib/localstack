@@ -1,13 +1,15 @@
 import json
 
 import pytest
+from localstack_snapshot.snapshots.transformer import JsonpathTransformer
 
 from localstack import config
 from localstack.aws.api.lambda_ import Runtime
-from localstack.constants import TEST_AWS_REGION_NAME
 from localstack.testing.aws.util import is_aws_cloud
 from localstack.testing.pytest import markers
-from localstack.testing.snapshots.transformer import JsonpathTransformer
+from localstack.testing.pytest.stepfunctions.utils import (
+    create_and_record_execution,
+)
 from localstack.utils.aws import arns, aws_stack
 from localstack.utils.strings import short_uid
 from tests.aws.services.apigateway.apigateway_fixtures import create_rest_resource
@@ -15,13 +17,10 @@ from tests.aws.services.apigateway.conftest import APIGATEWAY_ASSUME_ROLE_POLICY
 from tests.aws.services.stepfunctions.templates.services.services_templates import (
     ServicesTemplates as ST,
 )
-from tests.aws.services.stepfunctions.utils import create_and_record_execution
 
 
 @markers.snapshot.skip_snapshot_verify(
     paths=[
-        "$..loggingConfiguration",
-        "$..tracingConfiguration",
         # TODO: add support for Sdk Http metadata.
         "$..SdkHttpMetadata",
         "$..SdkResponseMetadata",
@@ -95,14 +94,14 @@ class TestTaskApiGateway:
         create_function_response = create_lambda_function(
             func_name=function_name,
             handler_file=lambda_function_filename,
-            runtime=Runtime.python3_9,
+            runtime=Runtime.python3_12,
         )
 
         _, role_arn = create_role_with_policy(
             "Allow", "lambda:InvokeFunction", json.dumps(APIGATEWAY_ASSUME_ROLE_POLICY), "*"
         )
         lambda_arn = create_function_response["CreateFunctionResponse"]["FunctionArn"]
-        target_uri = arns.apigateway_invocations_arn(lambda_arn, TEST_AWS_REGION_NAME)
+        target_uri = arns.apigateway_invocations_arn(lambda_arn, apigw_client.meta.region_name)
 
         api_id, _, root = create_rest_apigw(name=f"sfn-test-api-{short_uid()}")
         resource_id, _ = create_rest_resource(
@@ -188,7 +187,7 @@ class TestTaskApiGateway:
         aws_client,
         create_lambda_function,
         create_role_with_policy,
-        create_iam_role_for_sfn,
+        create_state_machine_iam_role,
         create_state_machine,
         create_rest_apigw,
         sfn_snapshot,
@@ -215,8 +214,8 @@ class TestTaskApiGateway:
             {"ApiEndpoint": api_url, "Method": http_method, "Path": part_path, "Stage": api_stage}
         )
         create_and_record_execution(
-            aws_client.stepfunctions,
-            create_iam_role_for_sfn,
+            aws_client,
+            create_state_machine_iam_role,
             create_state_machine,
             sfn_snapshot,
             definition,
@@ -238,7 +237,7 @@ class TestTaskApiGateway:
         aws_client,
         create_lambda_function,
         create_role_with_policy,
-        create_iam_role_for_sfn,
+        create_state_machine_iam_role,
         create_state_machine,
         create_rest_apigw,
         sfn_snapshot,
@@ -272,8 +271,69 @@ class TestTaskApiGateway:
             }
         )
         create_and_record_execution(
-            aws_client.stepfunctions,
-            create_iam_role_for_sfn,
+            aws_client,
+            create_state_machine_iam_role,
+            create_state_machine,
+            sfn_snapshot,
+            definition,
+            exec_input,
+        )
+
+    @pytest.mark.parametrize(
+        "custom_header",
+        [
+            ## TODO: Implement checks for singleStringHeader case to cause exception
+            pytest.param(
+                "singleStringHeader",
+                marks=pytest.mark.skip(reason="Behavior parity not implemented"),
+            ),
+            ["arrayHeader0"],
+            ["arrayHeader0", "arrayHeader1"],
+        ],
+    )
+    @markers.aws.validated
+    def test_invoke_with_headers(
+        self,
+        aws_client,
+        create_lambda_function,
+        create_role_with_policy,
+        create_state_machine_iam_role,
+        create_state_machine,
+        create_rest_apigw,
+        sfn_snapshot,
+        custom_header,
+    ):
+        self._add_api_gateway_transformers(sfn_snapshot)
+
+        http_method = "POST"
+        part_path = "id_func"
+
+        api_url, api_stage = self._create_lambda_api_response(
+            apigw_client=aws_client.apigateway,
+            create_lambda_function=create_lambda_function,
+            create_role_with_policy=create_role_with_policy,
+            lambda_function_filename=ST.LAMBDA_ID_FUNCTION,
+            create_rest_apigw=create_rest_apigw,
+            http_method=http_method,
+            part_path=part_path,
+        )
+
+        template = ST.load_sfn_template(ST.API_GATEWAY_INVOKE_WITH_HEADERS)
+        definition = json.dumps(template)
+
+        exec_input = json.dumps(
+            {
+                "ApiEndpoint": api_url,
+                "Method": http_method,
+                "Path": part_path,
+                "Stage": api_stage,
+                "RequestBody": {"message": "HelloWorld!"},
+                "Headers": {"custom_header": custom_header},
+            }
+        )
+        create_and_record_execution(
+            aws_client,
+            create_state_machine_iam_role,
             create_state_machine,
             sfn_snapshot,
             definition,
@@ -293,7 +353,7 @@ class TestTaskApiGateway:
         aws_client,
         create_lambda_function,
         create_role_with_policy,
-        create_iam_role_for_sfn,
+        create_state_machine_iam_role,
         create_state_machine,
         create_rest_apigw,
         sfn_snapshot,
@@ -329,8 +389,8 @@ class TestTaskApiGateway:
             }
         )
         create_and_record_execution(
-            aws_client.stepfunctions,
-            create_iam_role_for_sfn,
+            aws_client,
+            create_state_machine_iam_role,
             create_state_machine,
             sfn_snapshot,
             definition,
@@ -351,7 +411,7 @@ class TestTaskApiGateway:
         aws_client,
         create_lambda_function,
         create_role_with_policy,
-        create_iam_role_for_sfn,
+        create_state_machine_iam_role,
         create_state_machine,
         create_rest_apigw,
         sfn_snapshot,
@@ -384,8 +444,8 @@ class TestTaskApiGateway:
             }
         )
         create_and_record_execution(
-            aws_client.stepfunctions,
-            create_iam_role_for_sfn,
+            aws_client,
+            create_state_machine_iam_role,
             create_state_machine,
             sfn_snapshot,
             definition,

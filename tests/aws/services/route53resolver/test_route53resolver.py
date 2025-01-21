@@ -115,7 +115,10 @@ class TestRoute53Resolver:
 
         if not poll_condition(condition=_list_resolver_rule_associations, timeout=180, interval=2):
             LOG.warning(
-                f"Timed out while awaiting for resolver rule to {action} with with VPCId:'{vpc_id}' and ResolverRuleId: '{resolver_rule_id}'."
+                "Timed out while awaiting for resolver rule to '%s' with with VPCId:'%s' and ResolverRuleId: '%s'.",
+                action,
+                vpc_id,
+                resolver_rule_id,
             )
         else:
             return True
@@ -134,7 +137,8 @@ class TestRoute53Resolver:
 
         if not poll_condition(condition=_is_req_id_in_list, timeout=120, interval=2):
             LOG.warning(
-                f"Timed out while awaiting for resolver query log config with with id:'{id}' to become listable."
+                "Timed out while awaiting for resolver query log config with with id:'%s' to become listable.",
+                id,
             )
         else:
             return True
@@ -146,9 +150,9 @@ class TestRoute53Resolver:
             resolver_endpoint_request_ids_status = {}
 
             for resolver_endpoint in lst.get("ResolverEndpoints", []):
-                resolver_endpoint_request_ids_status[
-                    resolver_endpoint["CreatorRequestId"]
-                ] = resolver_endpoint["Status"]
+                resolver_endpoint_request_ids_status[resolver_endpoint["CreatorRequestId"]] = (
+                    resolver_endpoint["Status"]
+                )
             for key, value in resolver_endpoint_request_ids_status.items():
                 if key == req_id:
                     return value == status
@@ -156,7 +160,8 @@ class TestRoute53Resolver:
 
         if not poll_condition(condition=_is_req_id_in_list, timeout=180, interval=2):
             LOG.warning(
-                f"Timed out while awaiting for resolver endpoint with with request id:'{req_id}' to become listable."
+                "Timed out while awaiting for resolver endpoint with with request id:'%s' to become listable.",
+                req_id,
             )
         else:
             return True

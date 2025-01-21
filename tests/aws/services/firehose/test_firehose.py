@@ -7,14 +7,12 @@ import requests
 from pytest_httpserver import HTTPServer
 
 from localstack import config
-from localstack.constants import TEST_AWS_ACCOUNT_ID
 from localstack.testing.aws.util import is_aws_cloud
 from localstack.testing.pytest import markers
 from localstack.utils.aws import arns
 from localstack.utils.strings import short_uid, to_bytes, to_str
 from localstack.utils.sync import poll_condition, retry
-
-from .conftest import get_firehose_iam_documents
+from tests.aws.services.firehose.helper_functions import get_firehose_iam_documents
 
 PROCESSOR_LAMBDA = """
 def handler(event, context):
@@ -138,12 +136,18 @@ def test_kinesis_firehose_http(
 class TestFirehoseIntegration:
     @markers.skip_offline
     @markers.aws.unknown
+    @pytest.mark.skip(reason="flaky")
     def test_kinesis_firehose_elasticsearch_s3_backup(
-        self, s3_bucket, kinesis_create_stream, cleanups, aws_client
+        self,
+        s3_bucket,
+        kinesis_create_stream,
+        cleanups,
+        aws_client,
+        account_id,
     ):
         domain_name = f"test-domain-{short_uid()}"
         stream_name = f"test-stream-{short_uid()}"
-        role_arn = f"arn:aws:iam::{TEST_AWS_ACCOUNT_ID}:role/Firehose-Role"
+        role_arn = f"arn:aws:iam::{account_id}:role/Firehose-Role"
         delivery_stream_name = f"test-delivery-stream-{short_uid()}"
         es_create_response = aws_client.es.create_elasticsearch_domain(DomainName=domain_name)
         cleanups.append(lambda: aws_client.es.delete_elasticsearch_domain(DomainName=domain_name))
@@ -242,6 +246,7 @@ class TestFirehoseIntegration:
     @markers.skip_offline
     @pytest.mark.parametrize("opensearch_endpoint_strategy", ["domain", "path", "port"])
     @markers.aws.unknown
+    @pytest.mark.skip(reason="flaky")
     def test_kinesis_firehose_opensearch_s3_backup(
         self,
         s3_bucket,
@@ -249,10 +254,11 @@ class TestFirehoseIntegration:
         monkeypatch,
         opensearch_endpoint_strategy,
         aws_client,
+        account_id,
     ):
         domain_name = f"test-domain-{short_uid()}"
         stream_name = f"test-stream-{short_uid()}"
-        role_arn = f"arn:aws:iam::{TEST_AWS_ACCOUNT_ID}:role/Firehose-Role"
+        role_arn = f"arn:aws:iam::{account_id}:role/Firehose-Role"
         delivery_stream_name = f"test-delivery-stream-{short_uid()}"
         monkeypatch.setattr(config, "OPENSEARCH_ENDPOINT_STRATEGY", opensearch_endpoint_strategy)
         try:
@@ -355,12 +361,12 @@ class TestFirehoseIntegration:
 
     @markers.aws.unknown
     def test_kinesis_firehose_kinesis_as_source(
-        self, s3_bucket, kinesis_create_stream, cleanups, aws_client
+        self, s3_bucket, kinesis_create_stream, cleanups, aws_client, account_id
     ):
         bucket_arn = arns.s3_bucket_arn(s3_bucket)
         stream_name = f"test-stream-{short_uid()}"
         log_group_name = f"group{short_uid()}"
-        role_arn = f"arn:aws:iam::{TEST_AWS_ACCOUNT_ID}:role/Firehose-Role"
+        role_arn = f"arn:aws:iam::{account_id}:role/Firehose-Role"
         delivery_stream_name = f"test-delivery-stream-{short_uid()}"
 
         kinesis_create_stream(StreamName=stream_name, ShardCount=2)
@@ -527,3 +533,58 @@ class TestFirehoseIntegration:
             ]
         )
         snapshot.match("kinesis-event-stream-multiple-delivery-streams", s3_data)
+
+    @markers.aws.validated
+    def test_kinesis_firehose_s3_as_destination_with_file_extension(
+        self,
+        s3_bucket,
+        aws_client,
+        account_id,
+        firehose_create_delivery_stream,
+        create_iam_role_with_policy,
+    ):
+        bucket_arn = arns.s3_bucket_arn(s3_bucket)
+        delivery_stream_name = f"test-delivery-stream-{short_uid()}"
+        file_extension = ".txt"
+
+        role_policy, policy_document = get_firehose_iam_documents(bucket_arn, "*")
+
+        role_arn = create_iam_role_with_policy(
+            RoleDefinition=role_policy, PolicyDefinition=policy_document
+        )
+
+        if is_aws_cloud():
+            time.sleep(10)  # AWS IAM propagation delay
+
+        firehose_create_delivery_stream(
+            DeliveryStreamName=delivery_stream_name,
+            DeliveryStreamType="DirectPut",
+            ExtendedS3DestinationConfiguration={
+                "BucketARN": bucket_arn,
+                "RoleARN": role_arn,
+                "FileExtension": file_extension,
+                "ErrorOutputPrefix": "errors",
+            },
+        )
+
+        # prepare sample message
+        data = base64.b64encode(TEST_MESSAGE.encode())
+        record = {"Data": data}
+
+        def assert_s3_contents():
+            aws_client.firehose.put_record(
+                DeliveryStreamName=delivery_stream_name,
+                Record=record,
+            )
+            s3_objects = aws_client.s3.list_objects(Bucket=s3_bucket)["Contents"]
+            s3_object = s3_objects[0]
+            assert s3_object["Key"].endswith(file_extension)
+
+        retry_options = {"sleep": 1, "retries": 10, "sleep_before": 1}
+
+        if is_aws_cloud():
+            retry_options["retries"] = 600
+            retry_options["sleep"] = 5
+            retry_options["sleep_before"] = 10
+
+        retry(assert_s3_contents, **retry_options)

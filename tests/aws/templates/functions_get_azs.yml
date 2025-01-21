@@ -1,3 +1,7 @@
+Parameters:
+  DeployRegion:
+    Type: String
+
 Resources:
   SsmParameter:
     Type: AWS::SSM::Parameter
@@ -6,7 +10,7 @@ Resources:
       Value:
         Fn::Join:
           - ";"
-          - Fn::GetAZs: !Ref "AWS::Region"
+          - Fn::GetAZs: !Ref DeployRegion
 Outputs:
   Zones:
     Value:
