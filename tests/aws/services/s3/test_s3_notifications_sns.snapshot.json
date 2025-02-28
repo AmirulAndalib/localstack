@@ -1,6 +1,6 @@
 {
   "tests/aws/services/s3/test_s3_notifications_sns.py::TestS3NotificationsToSns::test_object_created_put": {
-    "recorded-date": "05-08-2023, 00:52:31",
+    "recorded-date": "21-01-2025, 23:20:27",
     "recorded-content": {
       "receive_messages": {
         "messages": [
@@ -31,7 +31,7 @@
                       "ownerIdentity": {
                         "principalId": "<principal-id:1>"
                       },
-                      "arn": "arn:aws:s3:::<resource:1>"
+                      "arn": "arn:<partition>:s3:::<resource:1>"
                     },
                     "object": {
                       "key": "bucket-key",
@@ -49,9 +49,9 @@
             "SigningCertURL": "<cert-domain>/SimpleNotificationService-<signing-cert-file:1>",
             "Subject": "Amazon S3 Notification",
             "Timestamp": "date",
-            "TopicArn": "arn:aws:sns:<region>:111111111111:<resource:2>",
+            "TopicArn": "arn:<partition>:sns:<region>:111111111111:<resource:2>",
             "Type": "Notification",
-            "UnsubscribeURL": "<unsubscribe-domain>/?Action=Unsubscribe&SubscriptionArn=arn:aws:sns:<region>:111111111111:<resource:2>:<resource:3>"
+            "UnsubscribeURL": "<unsubscribe-domain>/?Action=Unsubscribe&SubscriptionArn=arn:<partition>:sns:<region>:111111111111:<resource:2>:<resource:3>"
           },
           {
             "Message": {
@@ -80,7 +80,7 @@
                       "ownerIdentity": {
                         "principalId": "<principal-id:1>"
                       },
-                      "arn": "arn:aws:s3:::<resource:1>"
+                      "arn": "arn:<partition>:s3:::<resource:1>"
                     },
                     "object": {
                       "key": "bucket-key",
@@ -98,16 +98,16 @@
             "SigningCertURL": "<cert-domain>/SimpleNotificationService-<signing-cert-file:1>",
             "Subject": "Amazon S3 Notification",
             "Timestamp": "date",
-            "TopicArn": "arn:aws:sns:<region>:111111111111:<resource:2>",
+            "TopicArn": "arn:<partition>:sns:<region>:111111111111:<resource:2>",
             "Type": "Notification",
-            "UnsubscribeURL": "<unsubscribe-domain>/?Action=Unsubscribe&SubscriptionArn=arn:aws:sns:<region>:111111111111:<resource:2>:<resource:3>"
+            "UnsubscribeURL": "<unsubscribe-domain>/?Action=Unsubscribe&SubscriptionArn=arn:<partition>:sns:<region>:111111111111:<resource:2>:<resource:3>"
           }
         ]
       }
     }
   },
   "tests/aws/services/s3/test_s3_notifications_sns.py::TestS3NotificationsToSns::test_bucket_notifications_with_filter": {
-    "recorded-date": "05-08-2023, 00:52:37",
+    "recorded-date": "21-01-2025, 23:20:33",
     "recorded-content": {
       "message": {
         "Message": {
@@ -136,7 +136,7 @@
                   "ownerIdentity": {
                     "principalId": "<principal-id:1>"
                   },
-                  "arn": "arn:aws:s3:::<resource:1>"
+                  "arn": "arn:<partition>:s3:::<resource:1>"
                 },
                 "object": {
                   "key": "testupload/dir1/testfile.txt",
@@ -154,14 +154,14 @@
         "SigningCertURL": "<cert-domain>/SimpleNotificationService-<signing-cert-file:1>",
         "Subject": "Amazon S3 Notification",
         "Timestamp": "date",
-        "TopicArn": "arn:aws:sns:<region>:111111111111:<resource:2>",
+        "TopicArn": "arn:<partition>:sns:<region>:111111111111:<resource:2>",
         "Type": "Notification",
-        "UnsubscribeURL": "<unsubscribe-domain>/?Action=Unsubscribe&SubscriptionArn=arn:aws:sns:<region>:111111111111:<resource:2>:<resource:3>"
+        "UnsubscribeURL": "<unsubscribe-domain>/?Action=Unsubscribe&SubscriptionArn=arn:<partition>:sns:<region>:111111111111:<resource:2>:<resource:3>"
       }
     }
   },
   "tests/aws/services/s3/test_s3_notifications_sns.py::TestS3NotificationsToSns::test_invalid_topic_arn": {
-    "recorded-date": "05-08-2023, 00:52:42",
+    "recorded-date": "21-01-2025, 23:20:37",
     "recorded-content": {
       "invalid_not_skip": {
         "Error": {
@@ -194,7 +194,7 @@
               "s3:ObjectCreated:*"
             ],
             "Id": "id123",
-            "TopicArn": "arn:aws:sns:<region>:111111111111:my-topic"
+            "TopicArn": "arn:<partition>:sns:<region>:111111111111:my-topic"
           }
         ],
         "ResponseMetadata": {
@@ -205,7 +205,7 @@
     }
   },
   "tests/aws/services/s3/test_s3_notifications_sns.py::TestS3NotificationsToSns::test_bucket_not_exist": {
-    "recorded-date": "05-08-2023, 00:52:39",
+    "recorded-date": "21-01-2025, 23:20:35",
     "recorded-content": {
       "bucket_not_exists": {
         "Error": {

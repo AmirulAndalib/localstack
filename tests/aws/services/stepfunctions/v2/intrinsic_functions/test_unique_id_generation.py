@@ -1,20 +1,22 @@
 import json
 
-from localstack.services.stepfunctions.asl.utils.json_path import JSONPathUtils
+from localstack_snapshot.snapshots.transformer import RegexTransformer
+
+from localstack.services.stepfunctions.asl.utils.json_path import extract_json
 from localstack.testing.pytest import markers
-from localstack.testing.snapshots.transformer import RegexTransformer
+from localstack.testing.pytest.stepfunctions.utils import await_execution_success
 from localstack.utils.strings import short_uid
 from tests.aws.services.stepfunctions.templates.intrinsicfunctions.intrinsic_functions_templates import (
     IntrinsicFunctionTemplate as IFT,
 )
-from tests.aws.services.stepfunctions.utils import await_execution_success
 
 
-@markers.snapshot.skip_snapshot_verify(paths=["$..loggingConfiguration", "$..tracingConfiguration"])
 class TestUniqueIdGeneration:
     @markers.aws.validated
-    def test_uuid(self, create_iam_role_for_sfn, create_state_machine, sfn_snapshot, aws_client):
-        snf_role_arn = create_iam_role_for_sfn()
+    def test_uuid(
+        self, create_state_machine_iam_role, create_state_machine, sfn_snapshot, aws_client
+    ):
+        snf_role_arn = create_state_machine_iam_role(aws_client)
         sfn_snapshot.add_transformer(RegexTransformer(snf_role_arn, "snf_role_arn"))
 
         sm_name: str = f"statemachine_{short_uid()}"
@@ -22,7 +24,7 @@ class TestUniqueIdGeneration:
         definition_str = json.dumps(definition)
 
         creation_resp = create_state_machine(
-            name=sm_name, definition=definition_str, roleArn=snf_role_arn
+            aws_client, name=sm_name, definition=definition_str, roleArn=snf_role_arn
         )
         sfn_snapshot.add_transformer(sfn_snapshot.transform.sfn_sm_create_arn(creation_resp, 0))
         state_machine_arn = creation_resp["stateMachineArn"]
@@ -36,9 +38,7 @@ class TestUniqueIdGeneration:
         )
 
         exec_hist_resp = aws_client.stepfunctions.get_execution_history(executionArn=execution_arn)
-        output = JSONPathUtils.extract_json(
-            "$..executionSucceededEventDetails..output", exec_hist_resp
-        )
+        output = extract_json("$..executionSucceededEventDetails..output", exec_hist_resp)
         uuid = json.loads(output)[IFT.FUNCTION_OUTPUT_KEY]
         sfn_snapshot.add_transformer(RegexTransformer(uuid, "generated-uuid"))
 

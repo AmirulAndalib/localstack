@@ -4,6 +4,7 @@ import requests
 from localstack import config
 
 
+@pytest.mark.usefixtures("openapi_validate")
 class TestInitScriptsResource:
     def test_stages_have_completed(self):
         response = requests.get(config.internal_service_url() + "/_localstack/init")
@@ -31,6 +32,7 @@ class TestInitScriptsResource:
         assert response.json()["completed"] == completed
 
 
+@pytest.mark.usefixtures("openapi_validate")
 class TestHealthResource:
     def test_get(self):
         response = requests.get(config.internal_service_url() + "/_localstack/health")
@@ -44,16 +46,17 @@ class TestHealthResource:
         assert not response.text
 
 
+@pytest.mark.usefixtures("openapi_validate")
 class TestInfoEndpoint:
     def test_get(self):
         response = requests.get(config.internal_service_url() + "/_localstack/info")
         assert response.ok
         doc = response.json()
 
-        from localstack import __version__ as version
+        from localstack.constants import VERSION
 
         # we're being specifically vague here since we want this test to be robust against pro or community
-        assert doc["version"].startswith(str(version))
+        assert doc["version"].startswith(str(VERSION))
         assert doc["session_id"]
         assert doc["machine_id"]
         assert doc["system"]

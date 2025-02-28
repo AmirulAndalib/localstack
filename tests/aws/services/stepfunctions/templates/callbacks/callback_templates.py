@@ -13,6 +13,9 @@ class CallbackTemplates(TemplateLoader):
     SFN_START_EXECUTION_SYNC2: Final[str] = os.path.join(
         _THIS_FOLDER, "statemachines/sfn_start_execution_sync2.json5"
     )
+    SFN_START_EXECUTION_SYNC_WITH_TASK_TOKEN: Final[str] = os.path.join(
+        _THIS_FOLDER, "statemachines/sfn_start_execution_sync_with_task_token.json5"
+    )
     SNS_PUBLIC_WAIT_FOR_TASK_TOKEN: Final[str] = os.path.join(
         _THIS_FOLDER, "statemachines/sns_publish_wait_for_task_token.json5"
     )
@@ -25,9 +28,21 @@ class CallbackTemplates(TemplateLoader):
     SQS_WAIT_FOR_TASK_TOKEN: Final[str] = os.path.join(
         _THIS_FOLDER, "statemachines/sqs_wait_for_task_token.json5"
     )
+    SQS_WAIT_FOR_TASK_TOKEN_CALL_CHAIN: Final[str] = os.path.join(
+        _THIS_FOLDER, "statemachines/sqs_wait_for_task_token_call_chain.json5"
+    )
     SQS_WAIT_FOR_TASK_TOKEN_WITH_TIMEOUT: Final[str] = os.path.join(
         _THIS_FOLDER, "statemachines/sqs_wait_for_task_token_with_timeout.json5"
     )
+    SQS_WAIT_FOR_TASK_TOKEN_NO_TOKEN_PARAMETER: Final[str] = os.path.join(
+        _THIS_FOLDER, "statemachines/sqs_wait_for_task_token_no_token_parameter.json5"
+    )
     SQS_HEARTBEAT_SUCCESS_ON_TASK_TOKEN: Final[str] = os.path.join(
         _THIS_FOLDER, "statemachines/sqs_hearbeat_success_on_task_token.json5"
+    )
+    SQS_PARALLEL_WAIT_FOR_TASK_TOKEN: Final[str] = os.path.join(
+        _THIS_FOLDER, "statemachines/sqs_parallel_wait_for_task_token.json5"
+    )
+    SQS_WAIT_FOR_TASK_TOKEN_CATCH: Final[str] = os.path.join(
+        _THIS_FOLDER, "statemachines/sqs_wait_for_task_token_catch.json5"
     )

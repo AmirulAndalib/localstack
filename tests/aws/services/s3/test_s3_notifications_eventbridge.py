@@ -2,7 +2,6 @@ import json
 
 import pytest
 
-from localstack.constants import SECONDARY_TEST_AWS_REGION_NAME
 from localstack.testing.aws.util import is_aws_cloud
 from localstack.testing.pytest import markers
 from localstack.utils.strings import short_uid
@@ -12,17 +11,15 @@ from tests.aws.services.s3.conftest import TEST_S3_IMAGE
 
 @pytest.fixture
 def basic_event_bridge_rule_to_sqs_queue(
-    s3_create_bucket, events_create_rule, sqs_create_queue, sqs_get_queue_arn, aws_client
+    s3_bucket, events_create_rule, sqs_create_queue, sqs_get_queue_arn, aws_client
 ):
     bus_name = "default"
     queue_name = f"test-queue-{short_uid()}"
-    bucket_name = f"test-bucket-{short_uid()}"
     rule_name = f"test-rule-{short_uid()}"
     target_id = f"test-target-{short_uid()}"
 
-    s3_create_bucket(Bucket=bucket_name)
     aws_client.s3.put_bucket_notification_configuration(
-        Bucket=bucket_name, NotificationConfiguration={"EventBridgeConfiguration": {}}
+        Bucket=s3_bucket, NotificationConfiguration={"EventBridgeConfiguration": {}}
     )
 
     pattern = {
@@ -39,7 +36,7 @@ def basic_event_bridge_rule_to_sqs_queue(
             "Object Storage Class Changed",
             "Object Access Tier Changed",
         ],
-        "detail": {"bucket": {"name": [bucket_name]}},
+        "detail": {"bucket": {"name": [s3_bucket]}},
     }
     rule_arn = events_create_rule(Name=rule_name, EventBusName=bus_name, EventPattern=pattern)
 
@@ -63,7 +60,7 @@ def basic_event_bridge_rule_to_sqs_queue(
     )
     aws_client.events.put_targets(Rule=rule_name, Targets=[{"Id": target_id, "Arn": queue_arn}])
 
-    return bucket_name, queue_url
+    return s3_bucket, queue_url
 
 
 @pytest.fixture(autouse=True)
@@ -173,7 +170,8 @@ class TestS3NotificationsToEventBridge:
             assert len(messages) == 4
 
         retries = 10 if is_aws_cloud() else 5
-        retry(_receive_messages, retries=retries, sleep=0.1)
+        sleep_time = 1 if is_aws_cloud() else 0.1
+        retry(_receive_messages, retries=retries, sleep=sleep_time)
         messages.sort(key=lambda x: (x["detail-type"], x["time"]))
         snapshot.match("messages", {"messages": messages})
 
@@ -229,20 +227,27 @@ class TestS3NotificationsToEventBridge:
             assert len(messages) == 2
 
         retries = 20 if is_aws_cloud() else 5
-        retry(_receive_messages, retries=retries, sleep=0.1)
+        sleep_time = 1 if is_aws_cloud() else 0.1
+        retry(_receive_messages, retries=retries, sleep=sleep_time)
         messages.sort(key=lambda x: x["time"])
         snapshot.match("messages", {"messages": messages})
 
     @markers.aws.validated
     def test_object_created_put_in_different_region(
-        self, basic_event_bridge_rule_to_sqs_queue, snapshot, aws_client_factory, aws_client
+        self,
+        basic_event_bridge_rule_to_sqs_queue,
+        snapshot,
+        aws_client_factory,
+        aws_client,
+        secondary_region_name,
+        region_name,
     ):
         snapshot.add_transformer(snapshot.transform.key_value("region"), priority=-1)
         # create the bucket and the queue URL in the default region
         bucket_name, queue_url = basic_event_bridge_rule_to_sqs_queue
 
         # create an S3 client in another region, to verify the region in the event
-        s3_client = aws_client_factory(region_name=SECONDARY_TEST_AWS_REGION_NAME).s3
+        s3_client = aws_client_factory(region_name=secondary_region_name).s3
         test_key = "test-key"
         s3_client.put_object(Bucket=bucket_name, Key=test_key, Body=b"data")
         aws_client.s3.put_object(Bucket=bucket_name, Key=test_key, Body=b"data")
@@ -260,4 +265,81 @@ class TestS3NotificationsToEventBridge:
         retries = 10 if is_aws_cloud() else 5
         retry(_receive_messages, retries=retries)
         snapshot.match("object-created-different-regions", {"messages": messages})
-        assert messages[0]["region"] == messages[1]["region"] == aws_client.s3.meta.region_name
+        assert messages[0]["region"] == messages[1]["region"] == region_name
+
+    @markers.aws.validated
+    def test_object_created_put_versioned(
+        self, basic_event_bridge_rule_to_sqs_queue, snapshot, aws_client
+    ):
+        snapshot.add_transformers_list(
+            [
+                snapshot.transform.key_value("version-id"),
+                snapshot.transform.key_value("VersionId"),
+            ]
+        )
+        bucket_name, queue_url = basic_event_bridge_rule_to_sqs_queue
+        aws_client.s3.put_bucket_versioning(
+            Bucket=bucket_name, VersioningConfiguration={"Status": "Enabled"}
+        )
+
+        test_key = "test-key"
+        # We snapshot all objects to snapshot their VersionId, to be sure the events correspond well to what we think
+        # create first version
+        obj_ver1 = aws_client.s3.put_object(Bucket=bucket_name, Key=test_key, Body=b"data")
+        snapshot.match("obj-ver1", obj_ver1)
+        # create second version
+        obj_ver2 = aws_client.s3.put_object(Bucket=bucket_name, Key=test_key, Body=b"data-version2")
+        snapshot.match("obj-ver2", obj_ver2)
+        # delete the top most version, creating a DeleteMarker
+        delete_marker = aws_client.s3.delete_object(Bucket=bucket_name, Key=test_key)
+        snapshot.match("delete-marker", delete_marker)
+        # delete a specific version (Version1)
+        delete_version = aws_client.s3.delete_object(
+            Bucket=bucket_name, Key=test_key, VersionId=obj_ver1["VersionId"]
+        )
+        snapshot.match("delete-version", delete_version)
+
+        messages = []
+
+        def _receive_messages(expected: int):
+            received = aws_client.sqs.receive_message(QueueUrl=queue_url).get("Messages", [])
+            for msg in received:
+                event_message = json.loads(msg["Body"])
+                messages.append(event_message)
+                aws_client.sqs.delete_message(
+                    QueueUrl=queue_url, ReceiptHandle=msg["ReceiptHandle"]
+                )
+
+            assert len(messages) == expected
+            # make the list always be sorted the same way, as it can be inconsistent in AWS
+            messages.sort(
+                key=lambda x: (
+                    x["detail"].get("deletion-type", ""),
+                    x["detail-type"],
+                    x["detail"]["object"].get("etag", ""),
+                )
+            )
+            return messages
+
+        retries = 15 if is_aws_cloud() else 5
+        retry(_receive_messages, retries=retries, expected=4)
+        snapshot.match("message-versioning-active", messages)
+        messages.clear()
+
+        # suspend the versioning
+        aws_client.s3.put_bucket_versioning(
+            Bucket=bucket_name, VersioningConfiguration={"Status": "Suspended"}
+        )
+        # add a new object, which will have versionId = null
+        add_null_version = aws_client.s3.put_object(
+            Bucket=bucket_name, Key=test_key, Body=b"data-version3"
+        )
+        snapshot.match("add-null-version", add_null_version)
+        # delete the DeleteMarker
+        del_delete_marker = aws_client.s3.delete_object(
+            Bucket=bucket_name, Key=test_key, VersionId=delete_marker["VersionId"]
+        )
+        snapshot.match("del-delete-marker", del_delete_marker)
+
+        retry(_receive_messages, retries=retries, expected=2)
+        snapshot.match("message-versioning-suspended", messages)

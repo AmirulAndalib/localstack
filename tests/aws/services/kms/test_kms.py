@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import json
+import os
 import uuid
 from datetime import datetime
 from random import getrandbits
@@ -8,13 +9,20 @@ from random import getrandbits
 import pytest
 from botocore.config import Config
 from botocore.exceptions import ClientError
-from cryptography.hazmat.primitives.asymmetric.padding import PKCS1v15
+from cryptography.hazmat.primitives import hashes, hmac, serialization
+from cryptography.hazmat.primitives.asymmetric import ec, padding
 from cryptography.hazmat.primitives.serialization import load_der_public_key
 
-from localstack.constants import SECONDARY_TEST_AWS_REGION_NAME, TEST_AWS_REGION_NAME
+from localstack.services.kms.models import IV_LEN, Ciphertext, _serialize_ciphertext_blob
 from localstack.services.kms.utils import get_hash_algorithm
+from localstack.testing.aws.util import in_default_partition
 from localstack.testing.pytest import markers
+from localstack.utils.crypto import encrypt
 from localstack.utils.strings import short_uid, to_str
+
+
+def create_tags(**kwargs):
+    return [{"TagKey": key, "TagValue": value} for key, value in kwargs.items()]
 
 
 @pytest.fixture(scope="class")
@@ -78,14 +86,14 @@ class TestKMS:
 
     @markers.aws.validated
     def test_create_key(
-        self, kms_client_for_region, kms_create_key, snapshot, aws_client, account_id
+        self, kms_client_for_region, kms_create_key, snapshot, aws_client, account_id, region_name
     ):
-        kms_client = kms_client_for_region(TEST_AWS_REGION_NAME)
+        kms_client = kms_client_for_region(region_name)
 
         key_ids_before = _get_all_key_ids(kms_client)
 
         key_id = kms_create_key(
-            region_name=TEST_AWS_REGION_NAME, Description="test key 123", KeyUsage="ENCRYPT_DECRYPT"
+            region_name=region_name, Description="test key 123", KeyUsage="ENCRYPT_DECRYPT"
         )["KeyId"]
         assert key_id not in key_ids_before
 
@@ -96,8 +104,182 @@ class TestKMS:
         snapshot.match("describe-key", response)
 
         assert response["KeyId"] == key_id
-        assert f":{TEST_AWS_REGION_NAME}:" in response["Arn"]
+        assert f":{region_name}:" in response["Arn"]
         assert f":{account_id}:" in response["Arn"]
+
+    @markers.aws.validated
+    def test_tag_existing_key_and_untag(
+        self, kms_client_for_region, kms_create_key, snapshot, region_name
+    ):
+        kms_client = kms_client_for_region(region_name)
+        key_id = kms_create_key(
+            region_name=region_name, Description="test key 123", KeyUsage="ENCRYPT_DECRYPT"
+        )["KeyId"]
+
+        tags = create_tags(tag1="value1", tag2="value2")
+        kms_client.tag_resource(KeyId=key_id, Tags=tags)
+
+        response = kms_client.list_resource_tags(KeyId=key_id)["Tags"]
+        snapshot.match("list-resource-tags", response)
+
+        tag_keys = [tag["TagKey"] for tag in tags]
+        kms_client.untag_resource(KeyId=key_id, TagKeys=tag_keys)
+
+        response = kms_client.list_resource_tags(KeyId=key_id)["Tags"]
+        snapshot.match("list-resource-tags-after-all-untagged", response)
+
+    @markers.aws.validated
+    def test_create_key_with_tag_and_untag(
+        self, kms_client_for_region, kms_create_key, snapshot, region_name
+    ):
+        kms_client = kms_client_for_region(region_name)
+
+        tags = create_tags(tag1="value1", tag2="value2")
+        key_id = kms_create_key(
+            region_name=region_name,
+            Description="test key 123",
+            KeyUsage="ENCRYPT_DECRYPT",
+            Tags=tags,
+        )["KeyId"]
+
+        response = kms_client.list_resource_tags(KeyId=key_id)["Tags"]
+        snapshot.match("list-resource-tags", response)
+
+        tag_keys = [tag["TagKey"] for tag in tags]
+        kms_client.untag_resource(KeyId=key_id, TagKeys=tag_keys)
+
+        response = kms_client.list_resource_tags(KeyId=key_id)["Tags"]
+        snapshot.match("list-resource-tags-after-all-untagged", response)
+
+    @markers.aws.validated
+    def test_untag_key_partially(
+        self, kms_client_for_region, kms_create_key, snapshot, region_name
+    ):
+        kms_client = kms_client_for_region(region_name)
+
+        tag_key_to_untag = "tag2"
+        tags = create_tags(**{"tag1": "value1", tag_key_to_untag: "value2", "tag3": "value3"})
+        key_id = kms_create_key(
+            region_name=region_name,
+            Description="test key 123",
+            KeyUsage="ENCRYPT_DECRYPT",
+            Tags=tags,
+        )["KeyId"]
+
+        response = kms_client.list_resource_tags(KeyId=key_id)["Tags"]
+        snapshot.match("list-resource-tags", response)
+
+        kms_client.untag_resource(KeyId=key_id, TagKeys=[tag_key_to_untag])
+
+        response = kms_client.list_resource_tags(KeyId=key_id)["Tags"]
+        snapshot.match("list-resource-tags-after-partially-untagged", response)
+
+    @markers.aws.validated
+    def test_update_and_add_tags_on_tagged_key(
+        self, kms_client_for_region, kms_create_key, snapshot, region_name
+    ):
+        kms_client = kms_client_for_region(region_name)
+
+        tag_key_to_modify = "tag2"
+        tags = create_tags(**{"tag1": "value1", tag_key_to_modify: "value2", "tag3": "value3"})
+        key_id = kms_create_key(
+            region_name=region_name,
+            Description="test key 123",
+            KeyUsage="ENCRYPT_DECRYPT",
+            Tags=tags,
+        )["KeyId"]
+
+        response = kms_client.list_resource_tags(KeyId=key_id)["Tags"]
+        snapshot.match("list-resource-tags", response)
+
+        new_tags = create_tags(
+            **{"tag4": "value4", tag_key_to_modify: "updated_value2", "tag5": "value5"}
+        )
+        kms_client.tag_resource(KeyId=key_id, Tags=new_tags)
+
+        response = kms_client.list_resource_tags(KeyId=key_id)["Tags"]
+        snapshot.match("list-resource-tags-after-tags-updated", response)
+
+    @markers.aws.validated
+    def test_tag_key_with_duplicate_tag_keys_raises_error(
+        self, kms_client_for_region, kms_create_key, snapshot, region_name
+    ):
+        kms_client = kms_client_for_region(region_name)
+        key_id = kms_create_key(
+            region_name=region_name, Description="test key 123", KeyUsage="ENCRYPT_DECRYPT"
+        )["KeyId"]
+
+        tags = [
+            {"TagKey": "tag1", "TagValue": "value1"},
+            {"TagKey": "tag1", "TagValue": "another-value1"},
+        ]
+        with pytest.raises(ClientError) as e:
+            kms_client.tag_resource(KeyId=key_id, Tags=tags)
+        snapshot.match("duplicate-tag-keys", e.value.response)
+
+    @markers.aws.validated
+    def test_create_key_with_too_many_tags_raises_error(
+        self, kms_create_key, snapshot, region_name
+    ):
+        max_tags = 50
+        tags = create_tags(**{f"key{i}": f"value{i}" for i in range(0, max_tags + 1)})
+
+        with pytest.raises(ClientError) as e:
+            kms_create_key(
+                region_name=region_name,
+                Description="test key 123",
+                KeyUsage="ENCRYPT_DECRYPT",
+                Tags=tags,
+            )["KeyId"]
+        snapshot.match("invalid-tag-key", e.value.response)
+
+    @markers.aws.validated
+    @pytest.mark.parametrize(
+        "invalid_tag_key",
+        ["aws:key1", "AWS:key1", "a" * 129],
+        ids=["lowercase_prefix", "uppercase_prefix", "too_long_key"],
+    )
+    def test_create_key_with_invalid_tag_key(
+        self, invalid_tag_key, kms_create_key, snapshot, region_name
+    ):
+        tags = create_tags(**{invalid_tag_key: "value1"})
+
+        with pytest.raises(ClientError) as e:
+            kms_create_key(
+                region_name=region_name,
+                Description="test key 123",
+                KeyUsage="ENCRYPT_DECRYPT",
+                Tags=tags,
+            )["KeyId"]
+        snapshot.match("invalid-tag-key", e.value.response)
+
+    @markers.aws.validated
+    def test_tag_existing_key_with_invalid_tag_key(
+        self, kms_client_for_region, kms_create_key, snapshot, region_name
+    ):
+        kms_client = kms_client_for_region(region_name)
+
+        key_id = kms_create_key(
+            region_name=region_name, Description="test key 123", KeyUsage="ENCRYPT_DECRYPT"
+        )["KeyId"]
+        tags = create_tags(**{"aws:key1": "value1"})
+
+        with pytest.raises(ClientError) as e:
+            kms_client.tag_resource(KeyId=key_id, Tags=tags)
+        snapshot.match("invalid-tag-key", e.value.response)
+
+    @markers.aws.validated
+    def test_key_with_long_tag_value_raises_error(self, kms_create_key, snapshot, region_name):
+        tags = create_tags(**{"tag1": "v" * 257})
+
+        with pytest.raises(ClientError) as e:
+            kms_create_key(
+                region_name=region_name,
+                Description="test key 123",
+                KeyUsage="ENCRYPT_DECRYPT",
+                Tags=tags,
+            )["KeyId"]
+        snapshot.match("too-long-tag-value", e.value.response)
 
     @markers.aws.only_localstack
     def test_create_key_custom_id(self, kms_create_key, aws_client):
@@ -108,10 +290,74 @@ class TestKMS:
         assert result["KeyId"] == key_id
         assert result["Arn"].endswith(f":key/{key_id}")
 
+    @markers.aws.only_localstack
+    def test_create_key_custom_key_material_hmac(self, kms_create_key, aws_client):
+        custom_key_material = b"custom test key material"
+        custom_key_tag_value = base64.b64encode(custom_key_material).decode("utf-8")
+        message = "some important message"
+        key_spec = "HMAC_256"
+        mac_algo = "HMAC_SHA_256"
+
+        # Generate expected MAC
+        h = hmac.HMAC(custom_key_material, hashes.SHA256())
+        h.update(message.encode("utf-8"))
+        expected_mac = h.finalize()
+
+        key_id = kms_create_key(
+            KeySpec=key_spec,
+            KeyUsage="GENERATE_VERIFY_MAC",
+            Tags=[{"TagKey": "_custom_key_material_", "TagValue": custom_key_tag_value}],
+        )["KeyId"]
+
+        mac = aws_client.kms.generate_mac(
+            KeyId=key_id,
+            Message=message,
+            MacAlgorithm=mac_algo,
+        )["Mac"]
+        assert mac == expected_mac
+
+        verify_mac_response = aws_client.kms.verify_mac(
+            KeyId=key_id,
+            Message="some important message",
+            MacAlgorithm=mac_algo,
+            Mac=expected_mac,
+        )
+        assert verify_mac_response["MacValid"]
+
+    @markers.aws.only_localstack
+    def test_create_key_custom_key_material_symmetric_decrypt(self, kms_create_key, aws_client):
+        custom_key_material = b"custom test key material"
+        custom_key_tag_value = base64.b64encode(custom_key_material).decode("utf-8")
+        algo = "SYMMETRIC_DEFAULT"
+        message = b"test message 123 !%$@ 1234567890"
+
+        key_id = kms_create_key(
+            Tags=[{"TagKey": "_custom_key_material_", "TagValue": custom_key_tag_value}]
+        )["KeyId"]
+
+        # Generate expected cipher text
+        iv = os.urandom(IV_LEN)
+        ciphertext, tag = encrypt(custom_key_material, message, iv, b"")
+        expected_ciphertext_blob = _serialize_ciphertext_blob(
+            ciphertext=Ciphertext(key_id=key_id, iv=iv, ciphertext=ciphertext, tag=tag)
+        )
+
+        plaintext = aws_client.kms.decrypt(
+            KeyId=key_id,
+            CiphertextBlob=expected_ciphertext_blob,
+            EncryptionAlgorithm=algo,
+        )["Plaintext"]
+        assert plaintext == message
+
     @markers.aws.validated
-    def test_get_key_in_different_region(self, kms_client_for_region, kms_create_key, snapshot):
-        client_region = TEST_AWS_REGION_NAME
-        key_region = SECONDARY_TEST_AWS_REGION_NAME
+    def test_get_key_in_different_region(
+        self, kms_client_for_region, kms_create_key, snapshot, region_name, secondary_region_name
+    ):
+        snapshot.add_transformer(
+            snapshot.transform.regex(secondary_region_name, "<secondary-region>")
+        )
+        client_region = region_name
+        key_region = secondary_region_name
         us_east_1_kms_client = kms_client_for_region(client_region)
         us_west_2_kms_client = kms_client_for_region(key_region)
 
@@ -476,7 +722,7 @@ class TestKMS:
             )
         assert exc.match("ValidationException")
 
-    @markers.aws.unknown
+    @markers.aws.validated
     def test_invalid_key_usage(self, kms_create_key, aws_client):
         key_id = kms_create_key(KeyUsage="ENCRYPT_DECRYPT", KeySpec="RSA_4096")["KeyId"]
         with pytest.raises(ClientError) as exc:
@@ -504,7 +750,7 @@ class TestKMS:
             ("RSA_2048", "RSAES_OAEP_SHA_256"),
         ],
     )
-    @markers.aws.unknown
+    @markers.aws.validated
     def test_encrypt_decrypt(self, kms_create_key, key_spec, algo, aws_client):
         key_id = kms_create_key(KeyUsage="ENCRYPT_DECRYPT", KeySpec=key_spec)["KeyId"]
         message = b"test message 123 !%$@ 1234567890"
@@ -513,6 +759,41 @@ class TestKMS:
         )["CiphertextBlob"]
         plaintext = aws_client.kms.decrypt(
             KeyId=key_id, CiphertextBlob=ciphertext, EncryptionAlgorithm=algo
+        )["Plaintext"]
+        assert base64.b64decode(plaintext) == message
+
+    @pytest.mark.parametrize(
+        "key_spec,algo",
+        [
+            ("RSA_2048", "RSAES_OAEP_SHA_1"),
+            ("RSA_2048", "RSAES_OAEP_SHA_256"),
+            ("RSA_3072", "RSAES_OAEP_SHA_1"),
+            ("RSA_3072", "RSAES_OAEP_SHA_256"),
+            ("RSA_4096", "RSAES_OAEP_SHA_1"),
+            ("RSA_4096", "RSAES_OAEP_SHA_256"),
+        ],
+    )
+    @markers.aws.validated
+    def test_symmetric_encrypt_offline_decrypt_online(
+        self, kms_create_key, key_spec, algo, aws_client
+    ):
+        key = kms_create_key(KeyUsage="ENCRYPT_DECRYPT", KeySpec=key_spec)
+        response = aws_client.kms.get_public_key(KeyId=key["KeyId"])
+
+        pub_key = response.get("PublicKey")
+
+        public_key = load_der_public_key(pub_key)
+        message = b"test message 123 !%$@ 1234567890"
+        ciphertext = public_key.encrypt(
+            base64.b64encode(message),
+            padding.OAEP(
+                mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                algorithm=hashes.SHA256(),
+                label=None,
+            ),
+        )
+        plaintext = aws_client.kms.decrypt(
+            KeyId=key["KeyId"], CiphertextBlob=ciphertext, EncryptionAlgorithm=algo
         )["Plaintext"]
         assert base64.b64decode(plaintext) == message
 
@@ -558,7 +839,7 @@ class TestKMS:
         assert key_id in _get_all_key_ids(aws_client.kms)
 
     @markers.aws.validated
-    def test_import_key(self, kms_create_key, aws_client, snapshot):
+    def test_import_key_symmetric(self, kms_create_key, aws_client, snapshot):
         snapshot.add_transformer(snapshot.transform.key_value("Description"))
         key = kms_create_key(Origin="EXTERNAL")
         snapshot.match("created-key", key)
@@ -572,7 +853,7 @@ class TestKMS:
 
         # get key import params
         params = aws_client.kms.get_parameters_for_import(
-            KeyId=key_id, WrappingAlgorithm="RSAES_PKCS1_V1_5", WrappingKeySpec="RSA_2048"
+            KeyId=key_id, WrappingAlgorithm="RSAES_OAEP_SHA_256", WrappingKeySpec="RSA_2048"
         )
         assert params["KeyId"] == key["Arn"]
         assert params["ImportToken"]
@@ -585,7 +866,12 @@ class TestKMS:
 
         # import symmetric key (key material) into KMS
         public_key = load_der_public_key(params["PublicKey"])
-        encrypted_key = public_key.encrypt(symmetric_key, PKCS1v15())
+        encrypted_key = public_key.encrypt(
+            symmetric_key,
+            padding.OAEP(
+                mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None
+            ),
+        )
         describe_key_before_import = aws_client.kms.describe_key(KeyId=key_id)
         snapshot.match("describe-key-before-import", describe_key_before_import)
 
@@ -621,6 +907,71 @@ class TestKMS:
         snapshot.match("encrypt-after-delete-error", e.value.response)
 
     @markers.aws.validated
+    def test_import_key_asymmetric(self, kms_create_key, aws_client, snapshot):
+        snapshot.add_transformer(snapshot.transform.key_value("Description"))
+        key = kms_create_key(Origin="EXTERNAL", KeySpec="ECC_NIST_P256", KeyUsage="SIGN_VERIFY")
+        snapshot.match("created-key", key)
+        key_id = key["KeyId"]
+
+        crypto_key = ec.generate_private_key(ec.SECP256R1())
+        raw_private_key = crypto_key.private_bytes(
+            serialization.Encoding.DER,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+        raw_public_key = crypto_key.public_key().public_bytes(
+            serialization.Encoding.DER,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        plaintext = b"test content 123 !#"
+
+        # get key import params
+        params = aws_client.kms.get_parameters_for_import(
+            KeyId=key_id, WrappingAlgorithm="RSAES_OAEP_SHA_256", WrappingKeySpec="RSA_2048"
+        )
+
+        # import asymmetric key (key material) into KMS
+        public_key = load_der_public_key(params["PublicKey"])
+        encrypted_key = public_key.encrypt(
+            raw_private_key,
+            padding.OAEP(
+                mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None
+            ),
+        )
+        describe_key_before_import = aws_client.kms.describe_key(KeyId=key_id)
+        snapshot.match("describe-key-before-import", describe_key_before_import)
+
+        aws_client.kms.import_key_material(
+            KeyId=key_id,
+            ImportToken=params["ImportToken"],
+            EncryptedKeyMaterial=encrypted_key,
+            ExpirationModel="KEY_MATERIAL_DOES_NOT_EXPIRE",
+        )
+        describe_key_after_import = aws_client.kms.describe_key(KeyId=key_id)
+        snapshot.match("describe-key-after-import", describe_key_after_import)
+
+        # Check whether public key is derived correctly
+        get_public_key_after_import = aws_client.kms.get_public_key(KeyId=key_id)
+        assert get_public_key_after_import["PublicKey"] == raw_public_key
+
+        # Do a sign/verify cycle
+        signed_data = aws_client.kms.sign(
+            Message=plaintext, MessageType="RAW", SigningAlgorithm="ECDSA_SHA_256", KeyId=key_id
+        )
+        verify_data = aws_client.kms.verify(
+            Message=plaintext,
+            Signature=signed_data["Signature"],
+            MessageType="RAW",
+            SigningAlgorithm="ECDSA_SHA_256",
+            KeyId=key_id,
+        )
+        assert verify_data["SignatureValid"]
+
+        aws_client.kms.delete_imported_key_material(KeyId=key_id)
+        describe_key_after_deleted_import = aws_client.kms.describe_key(KeyId=key_id)
+        snapshot.match("describe-key-after-deleted-import", describe_key_after_deleted_import)
+
+    @markers.aws.validated
     def test_list_aliases_of_key(self, kms_create_key, kms_create_alias, aws_client):
         aliased_key_id = kms_create_key()["KeyId"]
         comparison_key_id = kms_create_key()["KeyId"]
@@ -654,34 +1005,45 @@ class TestKMS:
         aws_client.kms.encrypt(KeyId=alias_name, Plaintext="encrypt-me")
 
     @markers.aws.validated
-    def test_create_multi_region_key(self, kms_create_key):
-        key = kms_create_key(MultiRegion=True)
+    def test_create_multi_region_key(self, kms_create_key, snapshot):
+        snapshot.add_transformer(snapshot.transform.kms_api())
+        key = kms_create_key(MultiRegion=True, Description="test multi region key")
         assert key["KeyId"].startswith("mrk-")
-        assert key["MultiRegion"]
+        snapshot.match("create_multi_region_key", key)
 
     @markers.aws.validated
-    def test_non_multi_region_keys_should_not_have_multi_region_properties(self, kms_create_key):
-        key = kms_create_key(MultiRegion=False)
+    def test_non_multi_region_keys_should_not_have_multi_region_properties(
+        self, kms_create_key, snapshot
+    ):
+        snapshot.add_transformer(snapshot.transform.kms_api())
+        key = kms_create_key(MultiRegion=False, Description="test non multi region key")
         assert not key["KeyId"].startswith("mrk-")
-        assert not key["MultiRegion"]
+        snapshot.match("non_multi_region_keys_should_not_have_multi_region_properties", key)
 
+    @pytest.mark.skipif(
+        not in_default_partition(), reason="Test not applicable in non-default partitions"
+    )
     @markers.aws.validated
     @markers.snapshot.skip_snapshot_verify(
         paths=[
             "$..KeyMetadata.Enabled",
             "$..KeyMetadata.KeyState",
-            "$..KeyMetadata.MultiRegionConfiguration",  # not implemented
             "$..ReplicaKeyMetadata.Enabled",
             "$..ReplicaKeyMetadata.KeyState",
-            "$..ReplicaKeyMetadata.MultiRegionConfiguration",  # not implemented
             "$..ReplicaPolicy",  # not implemented
         ],
     )
     def test_replicate_key(
-        self, kms_client_for_region, kms_create_key, kms_replicate_key, snapshot
+        self,
+        kms_client_for_region,
+        kms_create_key,
+        kms_replicate_key,
+        snapshot,
+        region_name,
+        secondary_region_name,
     ):
-        region_to_replicate_from = TEST_AWS_REGION_NAME
-        region_to_replicate_to = SECONDARY_TEST_AWS_REGION_NAME
+        region_to_replicate_from = region_name
+        region_to_replicate_to = secondary_region_name
         us_east_1_kms_client = kms_client_for_region(region_to_replicate_from)
         us_west_1_kms_client = kms_client_for_region(region_to_replicate_to)
 
@@ -759,7 +1121,7 @@ class TestKMS:
         assert alias is not None
         assert alias["TargetKeyId"] == new_key_id
 
-    @markers.aws.unknown
+    @markers.aws.validated
     def test_get_put_list_key_policies(self, kms_create_key, aws_client, account_id):
         base_policy = {
             "Version": "2012-10-17",
@@ -804,47 +1166,6 @@ class TestKMS:
         assert json.dumps(json.loads(key_policy)) == policy_two
 
     @markers.aws.validated
-    def test_tag_untag_list_tags(self, kms_create_key, aws_client):
-        def _create_tag(key):
-            return {"TagKey": key, "TagValue": short_uid()}
-
-        def _are_tags_there(tags, key_id):
-            if not tags:
-                return True
-            next_token = None
-            while True:
-                kwargs = {"nextToken": next_token} if next_token else {}
-                response = aws_client.kms.list_resource_tags(KeyId=key_id, **kwargs)
-                for response_tag in response["Tags"]:
-                    for i in range(len(tags)):
-                        if response_tag.get("TagKey") == tags[i].get("TagKey") and response_tag.get(
-                            "TagValue"
-                        ) == tags[i].get("TagValue"):
-                            del tags[i]
-                            if not tags:
-                                return True
-                            break
-                if "nextToken" not in response:
-                    break
-                next_token = response["nextToken"]
-            return False
-
-        old_tag_one = _create_tag("one")
-        new_tag_one = _create_tag("one")
-        tag_two = _create_tag("two")
-        tag_three = _create_tag("three")
-
-        key_id = kms_create_key(Tags=[old_tag_one, tag_two])["KeyId"]
-        assert _are_tags_there([old_tag_one, tag_two], key_id) is True
-        # Going to rewrite one of the tags and then add a new one.
-        aws_client.kms.tag_resource(KeyId=key_id, Tags=[new_tag_one, tag_three])
-        assert _are_tags_there([new_tag_one, tag_two, tag_three], key_id) is True
-        assert _are_tags_there([old_tag_one], key_id) is False
-        aws_client.kms.untag_resource(KeyId=key_id, TagKeys=[new_tag_one.get("TagKey")])
-        assert _are_tags_there([tag_two, tag_three], key_id) is True
-        assert _are_tags_there([new_tag_one], key_id) is False
-
-    @markers.aws.validated
     def test_cant_use_disabled_or_deleted_keys(self, kms_create_key, aws_client):
         key_id = kms_create_key(KeySpec="SYMMETRIC_DEFAULT", KeyUsage="ENCRYPT_DECRYPT")["KeyId"]
         aws_client.kms.generate_data_key(KeyId=key_id, KeySpec="AES_256")
@@ -869,12 +1190,12 @@ class TestKMS:
         e.match("KMSInvalidStateException")
 
     @markers.aws.validated
-    def test_hmac_create_key(self, kms_client_for_region, kms_create_key, snapshot):
-        kms_client = kms_client_for_region(TEST_AWS_REGION_NAME)
+    def test_hmac_create_key(self, kms_client_for_region, kms_create_key, snapshot, region_name):
+        kms_client = kms_client_for_region(region_name)
         key_ids_before = _get_all_key_ids(kms_client)
 
         response = kms_create_key(
-            region_name=TEST_AWS_REGION_NAME,
+            region_name=region_name,
             Description="test key",
             KeySpec="HMAC_256",
             KeyUsage="GENERATE_VERIFY_MAC",
@@ -890,7 +1211,7 @@ class TestKMS:
         snapshot.match("describe-key", response)
 
     @markers.aws.validated
-    def test_hmac_create_key_invalid_operations(self, kms_create_key, snapshot):
+    def test_hmac_create_key_invalid_operations(self, kms_create_key, snapshot, region_name):
         with pytest.raises(ClientError) as e:
             kms_create_key(Description="test HMAC key without key usage", KeySpec="HMAC_256")
         snapshot.match("create-hmac-key-without-key-usage", e.value.response)
@@ -901,7 +1222,7 @@ class TestKMS:
 
         with pytest.raises(ClientError) as e:
             kms_create_key(
-                region_name=TEST_AWS_REGION_NAME,
+                region_name=region_name,
                 Description="test invalid HMAC spec",
                 KeySpec="HMAC_256",
                 KeyUsage="RANDOM",
@@ -1138,9 +1459,75 @@ class TestKMS:
             )
         snapshot.match("response-error", e.value.response)
 
+    @markers.aws.validated
+    def test_derive_shared_secret(self, kms_create_key, aws_client, snapshot):
+        snapshot.add_transformer(
+            snapshot.transform.key_value("SharedSecret", reference_replacement=False)
+        )
+
+        # Create two keys and derive the shared secret
+        key1 = kms_create_key(KeySpec="ECC_NIST_P256", KeyUsage="KEY_AGREEMENT")
+        pub_key1 = aws_client.kms.get_public_key(KeyId=key1["KeyId"])["PublicKey"]
+
+        key2 = kms_create_key(KeySpec="ECC_NIST_P256", KeyUsage="KEY_AGREEMENT")
+        pub_key2 = aws_client.kms.get_public_key(KeyId=key2["KeyId"])["PublicKey"]
+
+        secret1 = aws_client.kms.derive_shared_secret(
+            KeyId=key1["KeyId"],
+            KeyAgreementAlgorithm="ECDH",
+            PublicKey=pub_key2,
+        )
+
+        snapshot.match("response", secret1)
+
+        # Check the two derived shared secrets are equal
+        secret2 = aws_client.kms.derive_shared_secret(
+            KeyId=key2["KeyId"],
+            KeyAgreementAlgorithm="ECDH",
+            PublicKey=pub_key1,
+        )
+
+        assert secret1["SharedSecret"] == secret2["SharedSecret"]
+
+        # Create a key with invalid key usage
+        key3 = kms_create_key(KeySpec="ECC_NIST_P256", KeyUsage="SIGN_VERIFY")
+        with pytest.raises(ClientError) as e:
+            aws_client.kms.derive_shared_secret(
+                KeyId=key3["KeyId"], KeyAgreementAlgorithm="ECDH", PublicKey=pub_key2
+            )
+        snapshot.match("response-invalid-key-usage", e.value.response)
+
+        # Create a key with invalid key spec
+        with pytest.raises(ClientError) as e:
+            kms_create_key(KeySpec="RSA_2048", KeyUsage="KEY_AGREEMENT")
+        snapshot.match("response-invalid-key-spec", e.value.response)
+
+        # Create a key with invalid key agreement algorithm
+        with pytest.raises(ClientError) as e:
+            aws_client.kms.derive_shared_secret(
+                KeyId=key1["KeyId"], KeyAgreementAlgorithm="INVALID", PublicKey=pub_key2
+            )
+        snapshot.match("response-invalid-key-agreement-algo", e.value.response)
+
+        # Create a symmetric and try to derive the shared secret
+        key4 = kms_create_key()
+        with pytest.raises(ClientError) as e:
+            aws_client.kms.derive_shared_secret(
+                KeyId=key4["KeyId"], KeyAgreementAlgorithm="ECDH", PublicKey=pub_key2
+            )
+        snapshot.match("response-invalid-key", e.value.response)
+
+        # Call derive shared secret function with invalid public key
+        with pytest.raises(ClientError) as e:
+            aws_client.kms.derive_shared_secret(
+                KeyId=key1["KeyId"], KeyAgreementAlgorithm="ECDH", PublicKey=b"InvalidPublicKey"
+            )
+        snapshot.match("response-invalid-public-key", e.value.response)
+
 
 class TestKMSMultiAccounts:
-    @markers.aws.unknown
+    @markers.aws.needs_fixing
+    # TODO: this test could not work against AWS, we need to assign proper permissions to the user/resources
     def test_cross_accounts_access(
         self, aws_client, secondary_aws_client, kms_create_key, user_arn
     ):

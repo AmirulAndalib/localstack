@@ -7,14 +7,13 @@ from operator import itemgetter
 import pytest
 import requests
 from botocore.exceptions import ClientError
+from localstack_snapshot.snapshots.transformer import SortingTransformer
 
 from localstack import config
 from localstack.aws.api.apigateway import Resources
 from localstack.aws.api.lambda_ import Runtime
-from localstack.constants import TEST_AWS_REGION_NAME
 from localstack.testing.aws.util import is_aws_cloud
 from localstack.testing.pytest import markers
-from localstack.testing.snapshots.transformer import SortingTransformer
 from localstack.utils.aws import arns
 from localstack.utils.files import load_file
 from localstack.utils.strings import short_uid
@@ -22,6 +21,7 @@ from localstack.utils.sync import retry, wait_until
 from localstack.utils.testutil import create_lambda_archive
 from localstack.utils.urls import localstack_host
 from tests.aws.services.apigateway.apigateway_fixtures import api_invoke_url
+from tests.aws.services.apigateway.conftest import is_next_gen_api
 
 LOG = logging.getLogger(__name__)
 
@@ -32,6 +32,7 @@ OPENAPI_SPEC_TF_JSON = os.path.join(PARENT_DIR, "../../files/openapi.spec.tf.jso
 SWAGGER_MOCK_CORS_JSON = os.path.join(PARENT_DIR, "../../files/swagger-mock-cors.json")
 PETSTORE_SWAGGER_JSON = os.path.join(PARENT_DIR, "../../files/petstore-authorizer.swagger.json")
 TEST_SWAGGER_FILE_JSON = os.path.join(PARENT_DIR, "../../files/swagger.json")
+TEST_OPENAPI_COGNITO_AUTH = os.path.join(PARENT_DIR, "../../files/openapi.cognito-auth.json")
 TEST_OAS30_BASE_PATH_SERVER_VAR_FILE_YAML = os.path.join(
     PARENT_DIR, "../../files/openapi-basepath-server-variable.yaml"
 )
@@ -48,6 +49,7 @@ OAS_30_CIRCULAR_REF_WITH_REQUEST_BODY = os.path.join(
 )
 OAS_30_STAGE_VARIABLES = os.path.join(PARENT_DIR, "../../files/openapi.spec.stage-variables.json")
 OAS30_HTTP_METHOD_INT = os.path.join(PARENT_DIR, "../../files/openapi-http-method-integration.json")
+OAS30_HTTP_STATUS_INT = os.path.join(PARENT_DIR, "../../files/openapi-method-int.spec.yaml")
 TEST_LAMBDA_PYTHON_ECHO = os.path.join(PARENT_DIR, "../lambda_/functions/lambda_echo.py")
 
 
@@ -178,7 +180,9 @@ def apigw_create_rest_api(aws_client):
 
 
 @pytest.fixture(scope="class")
-def apigateway_placeholder_authorizer_lambda_invocation_arn(aws_client, lambda_su_role):
+def apigateway_placeholder_authorizer_lambda_invocation_arn(
+    aws_client, region_name, lambda_su_role
+):
     """
     Using this fixture to create only one lambda in AWS to be used for every test, as we need a real lambda ARN
     to be able to import an API. We need a class scoped fixture here, so the code is pulled from
@@ -198,7 +202,7 @@ def apigateway_placeholder_authorizer_lambda_invocation_arn(aws_client, lambda_s
             # create_response is the original create call response, even though the fixture waits until it's not pending
             create_response = aws_client.lambda_.create_function(
                 FunctionName=f"test-authorizer-import-{short_uid()}",
-                Runtime=Runtime.python3_10,
+                Runtime=Runtime.python3_12,
                 Handler="handler.handler",
                 Role=lambda_su_role,
                 Code={"ZipFile": zip_file},
@@ -228,7 +232,7 @@ def apigateway_placeholder_authorizer_lambda_invocation_arn(aws_client, lambda_s
         response = retry(_create_function, retries=3, sleep=4)
 
         lambda_invocation_arn = arns.apigateway_invocations_arn(
-            response["FunctionArn"], TEST_AWS_REGION_NAME
+            response["FunctionArn"], region_name
         )
 
         yield lambda_invocation_arn
@@ -237,7 +241,7 @@ def apigateway_placeholder_authorizer_lambda_invocation_arn(aws_client, lambda_s
             try:
                 aws_client.lambda_.delete_function(FunctionName=arn)
             except Exception:
-                LOG.debug(f"Unable to delete function {arn=} in cleanup")
+                LOG.debug("Unable to delete function %s in cleanup", arn)
 
 
 @pytest.fixture
@@ -276,6 +280,7 @@ class TestApiGatewayImportRestApi:
     )
     def test_import_swagger_api(
         self,
+        region_name,
         import_apigw,
         snapshot,
         aws_client,
@@ -300,11 +305,13 @@ class TestApiGatewayImportRestApi:
         )
         spec_file = load_file(PETSTORE_SWAGGER_JSON)
         spec_file = spec_file.replace(
+            "${uri}", f"http://petstore.execute-api.{region_name}.amazonaws.com/petstore/pets"
+        )
+
+        spec_file = spec_file.replace(
             "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:account-id:function:function-name/invocations",
             apigateway_placeholder_authorizer_lambda_invocation_arn,
-        ).replace(
-            "arn:aws:iam::account-id:role", lambda_su_role
-        )  # we just need a placeholder role
+        ).replace("arn:aws:iam::account-id:role", lambda_su_role)  # we just need a placeholder role
 
         response, root_id = import_apigw(body=spec_file, failOnWarnings=True)
 
@@ -465,6 +472,7 @@ class TestApiGatewayImportRestApi:
             "$..cacheNamespace",  # TODO: investigate why it's different
             "$.get-resources-oas30-srv-url.items..id",  # TODO: even in overwrite, APIGW keeps the same ID if same path
             "$.get-resources-oas30-srv-url.items..parentId",  # TODO: even in overwrite, APIGW keeps the same ID if same path
+            "$.put-rest-api-oas30-srv-url..rootResourceId",  # TODO: because APIGW keeps the same above, id counting is different
         ]
     )
     def test_import_rest_api_with_base_path_oas30(
@@ -473,7 +481,6 @@ class TestApiGatewayImportRestApi:
         apigw_create_rest_api,
         aws_client,
         snapshot,
-        apigateway_placeholder_authorizer_lambda_invocation_arn,
         apigw_snapshot_imported_resources,
         apigw_deploy_rest_api,
     ):
@@ -647,7 +654,6 @@ class TestApiGatewayImportRestApi:
         paths=[
             "$.resources.items..resourceMethods.POST",
             # TODO: this is really weird, after importing, AWS returns them empty?
-            "$..rootResourceId",  # TODO: newly added
         ]
     )
     @markers.aws.validated
@@ -733,29 +739,76 @@ class TestApiGatewayImportRestApi:
         assert request.json().get("message") == "Invalid request body"
 
     @markers.aws.validated
-    def test_import_with_stage_variables(self, import_apigw, aws_client, echo_http_server_post):
+    @markers.snapshot.skip_snapshot_verify(paths=["$..origin"])
+    @markers.snapshot.skip_snapshot_verify(
+        condition=lambda: not is_next_gen_api(), paths=["$..method"]
+    )
+    def test_import_with_stage_variables(
+        self, import_apigw, aws_client, create_echo_http_server, snapshot
+    ):
+        snapshot.add_transformers_list(
+            [
+                snapshot.transform.key_value("domain"),
+                snapshot.transform.key_value("origin"),
+            ]
+        )
         spec_file = load_file(OAS_30_STAGE_VARIABLES)
+        if not is_aws_cloud():
+            # to make sure we return the endpoint without https to avoid cert issues
+            spec_file = spec_file.replace("https://", "http://")
+
         import_resp, root_id = import_apigw(body=spec_file, failOnWarnings=True)
         rest_api_id = import_resp["id"]
+        echo_server_url = create_echo_http_server(trim_x_headers=True)
+        endpoint = re.sub(r"https?://", "", echo_server_url)
 
         response = aws_client.apigateway.create_deployment(restApiId=rest_api_id)
+        deployment_id = response["id"]
         # workaround to remove the fixture scheme prefix. AWS won't allow stage variables
-        # on the OpenAPI uri without the scheme. So we let the scheme on the spec, "http://{stageVariables.url}",
+        # on the OpenAPI uri without the scheme. So we let the scheme on the spec, "https://{stageVariables.url}",
         # and remove it from the fixture
-        endpoint = re.sub(r"https?://", "", echo_http_server_post)
         aws_client.apigateway.create_stage(
             restApiId=rest_api_id,
             stageName="v1",
-            variables={"url": endpoint},
-            deploymentId=response["id"],
+            variables={
+                "TestHost": endpoint,
+                "testPath": "test-path",
+                "querystring": "qs_key=qs_value",
+            },
+            deploymentId=deployment_id,
         )
 
-        def call_api():
-            url = api_invoke_url(api_id=rest_api_id, stage="v1", path="/path1")
-            res = requests.get(url)
-            assert res.ok
+        url_success = api_invoke_url(api_id=rest_api_id, stage="v1", path="/path1")
 
-        retry(call_api, retries=5, sleep=2)
+        def call_api():
+            res = requests.get(url_success)
+            assert res.ok
+            return res.json()
+
+        resp = retry(call_api, retries=5, sleep=2)
+        # we remove the headers from the response, not really needed for this test
+        resp.pop("headers", None)
+        snapshot.match("get-resp-from-http", resp)
+
+        if is_next_gen_api() or is_aws_cloud():
+            # assert that we properly raise an integration failure error if the endpoint is bad
+            aws_client.apigateway.create_stage(
+                restApiId=rest_api_id,
+                stageName="v2",
+                deploymentId=deployment_id,
+            )
+
+            url_error = api_invoke_url(api_id=rest_api_id, stage="v2", path="/path1")
+
+            def call_api_error():
+                res = requests.get(url_error)
+                assert res.status_code == 500
+                return res.json()
+
+            resp = retry(call_api_error, retries=5, sleep=2)
+            # we remove the headers from the response, not really needed for this test
+            resp.pop("headers", None)
+            snapshot.match("get-error-resp-from-http", resp)
 
     @markers.aws.validated
     @markers.snapshot.skip_snapshot_verify(
@@ -777,6 +830,91 @@ class TestApiGatewayImportRestApi:
         spec_file = spec_file.replace(
             "${lambda_invocation_arn}", apigateway_placeholder_authorizer_lambda_invocation_arn
         )
+        import_resp, root_id = import_apigw(body=spec_file, failOnWarnings=True)
+        rest_api_id = import_resp["id"]
+
+        response = aws_client.apigateway.get_resources(restApiId=rest_api_id)
+        response["items"] = sorted(response["items"], key=itemgetter("path"))
+        snapshot.match("resources", response)
+
+        # this fixture will iterate over every resource and match its method, methodResponse, integration and
+        # integrationResponse
+        apigw_snapshot_imported_resources(rest_api_id=rest_api_id, resources=response)
+
+    @pytest.mark.no_apigw_snap_transformers
+    @markers.snapshot.skip_snapshot_verify(
+        paths=[
+            "$.resources.items..resourceMethods.GET",  # AWS does not show them after import
+        ]
+    )
+    @markers.aws.validated
+    def test_import_with_cognito_auth_identity_source(
+        self,
+        region_name,
+        account_id,
+        import_apigw,
+        snapshot,
+        aws_client,
+        apigw_snapshot_imported_resources,
+    ):
+        snapshot.add_transformers_list(
+            [
+                snapshot.transform.jsonpath("$.import-swagger.id", value_replacement="rest-id"),
+                snapshot.transform.jsonpath(
+                    "$.resources.items..id", value_replacement="resource-id"
+                ),
+                snapshot.transform.jsonpath(
+                    "$.get-authorizers..id", value_replacement="authorizer-id"
+                ),
+            ]
+        )
+        snapshot.add_transformer(
+            snapshot.transform.regex(
+                regex="petstore.execute-api.us-west-1",
+                replacement="<external-aws-endpoint>",
+            ),
+            priority=-10,
+        )
+        spec_file = load_file(TEST_OPENAPI_COGNITO_AUTH)
+        # the authorizer does not need to exist in AWS
+        spec_file = spec_file.replace(
+            "${cognito_pool_arn}",
+            f"arn:aws:cognito-idp:{region_name}:{account_id}:userpool/{region_name}_ABC123",
+        )
+        response, root_id = import_apigw(body=spec_file, failOnWarnings=True)
+        snapshot.match("import-swagger", response)
+
+        rest_api_id = response["id"]
+
+        authorizers = aws_client.apigateway.get_authorizers(restApiId=rest_api_id)
+        snapshot.match("get-authorizers", sorted(authorizers["items"], key=lambda x: x["name"]))
+
+        response = aws_client.apigateway.get_resources(restApiId=rest_api_id)
+        response["items"] = sorted(response["items"], key=itemgetter("path"))
+        snapshot.match("resources", response)
+
+        # this fixture will iterate over every resource and match its method, methodResponse, integration and
+        # integrationResponse
+        apigw_snapshot_imported_resources(rest_api_id=rest_api_id, resources=response)
+
+    @markers.aws.validated
+    @markers.snapshot.skip_snapshot_verify(
+        paths=[
+            "$.resources.items..resourceMethods.GET",
+        ]
+    )
+    def test_import_with_integer_http_status_code(
+        self,
+        import_apigw,
+        aws_client,
+        apigw_snapshot_imported_resources,
+        snapshot,
+    ):
+        # the following YAML file contains integer status code for the Method and IntegrationResponse
+        # when importing the API, we need to properly cast them into string to avoid any typing issue when serializing
+        # responses. Most typed languages would fail when parsing.
+        snapshot.add_transformer(snapshot.transform.key_value("uri"))
+        spec_file = load_file(OAS30_HTTP_STATUS_INT)
         import_resp, root_id = import_apigw(body=spec_file, failOnWarnings=True)
         rest_api_id = import_resp["id"]
 

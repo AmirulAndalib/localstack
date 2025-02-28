@@ -7,9 +7,12 @@ _THIS_FOLDER: Final[str] = os.path.dirname(os.path.realpath(__file__))
 
 
 class ErrorHandlingTemplate(TemplateLoader):
-    # State Machines.
     AWS_SDK_TASK_FAILED_S3_LIST_OBJECTS: Final[str] = os.path.join(
         _THIS_FOLDER, "statemachines/aws_sdk_task_error_s3_list_objects.json5"
+    )
+
+    AWS_SDK_TASK_FAILED_S3_NO_SUCH_KEY: Final[str] = os.path.join(
+        _THIS_FOLDER, "statemachines/aws_sdk_task_error_s3_no_such_key.json5"
     )
 
     AWS_SDK_TASK_FAILED_SECRETSMANAGER_CREATE_SECRET: Final[str] = os.path.join(
@@ -28,8 +31,24 @@ class ErrorHandlingTemplate(TemplateLoader):
         _THIS_FOLDER, "statemachines/task_lambda_invoke_catch_unknown.json5"
     )
 
+    AWS_LAMBDA_INVOKE_CATCH_TBD: Final[str] = os.path.join(
+        _THIS_FOLDER, "statemachines/task_lambda_invoke_catch_tbd.json5"
+    )
+
     AWS_LAMBDA_INVOKE_CATCH_RELEVANT: Final[str] = os.path.join(
         _THIS_FOLDER, "statemachines/task_lambda_invoke_catch_relevant.json5"
+    )
+
+    AWS_SERVICE_LAMBDA_INVOKE_CATCH_ALL: Final[str] = os.path.join(
+        _THIS_FOLDER, "statemachines/task_service_lambda_invoke_catch_all.json5"
+    )
+
+    AWS_SERVICE_LAMBDA_INVOKE_CATCH_ALL_OUTPUT_PATH: Final[str] = os.path.join(
+        _THIS_FOLDER, "statemachines/task_service_lambda_invoke_catch_all_output_path.json5"
+    )
+
+    AWS_SERVICE_LAMBDA_INVOKE_CATCH_DATA_LIMIT_EXCEEDED: Final[str] = os.path.join(
+        _THIS_FOLDER, "statemachines/task_service_lambda_invoke_catch_data_limit_exceeded.json5"
     )
 
     AWS_SERVICE_LAMBDA_INVOKE_CATCH_UNKNOWN: Final[str] = os.path.join(
@@ -44,6 +63,10 @@ class ErrorHandlingTemplate(TemplateLoader):
         _THIS_FOLDER, "statemachines/task_service_lambda_invoke_catch_relevant.json5"
     )
 
+    AWS_SERVICE_LAMBDA_INVOKE_CATCH_TBD: Final[str] = os.path.join(
+        _THIS_FOLDER, "statemachines/task_service_lambda_invoke_catch_tbd.json5"
+    )
+
     AWS_SERVICE_SQS_SEND_MSG_CATCH: Final[str] = os.path.join(
         _THIS_FOLDER, "statemachines/task_service_sqs_send_msg_catch.json5"
     )
@@ -53,6 +76,12 @@ class ErrorHandlingTemplate(TemplateLoader):
     )
 
     # Lambda Functions.
+    LAMBDA_FUNC_LARGE_OUTPUT_STRING: Final[str] = os.path.join(
+        _THIS_FOLDER, "lambdafunctions/large_output_string.py"
+    )
     LAMBDA_FUNC_RAISE_EXCEPTION: Final[str] = os.path.join(
         _THIS_FOLDER, "lambdafunctions/raise_exception.py"
+    )
+    LAMBDA_FUNC_RAISE_CUSTOM_EXCEPTION: Final[str] = os.path.join(
+        _THIS_FOLDER, "lambdafunctions/raise_custom_exception.py"
     )

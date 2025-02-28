@@ -2,8 +2,8 @@
 This file is to test specific behaviour of List* operations of S3, especially pagination, which is pretty specific to
 each implementation. They all have subtle differences which make it difficult to test.
 """
+
 import datetime
-import os
 from io import BytesIO
 
 import pytest
@@ -13,14 +13,10 @@ from botocore.client import Config
 from botocore.exceptions import ClientError
 
 from localstack import config
-from localstack.config import LEGACY_V2_S3_PROVIDER, S3_VIRTUAL_HOSTNAME
+from localstack.config import S3_VIRTUAL_HOSTNAME
 from localstack.constants import AWS_REGION_US_EAST_1, LOCALHOST_HOSTNAME
 from localstack.testing.aws.util import is_aws_cloud
 from localstack.testing.pytest import markers
-
-
-def is_v2_provider():
-    return LEGACY_V2_S3_PROVIDER
 
 
 def _bucket_url(bucket_name: str, region: str = "", localstack_host: str = None) -> str:
@@ -30,7 +26,7 @@ def _bucket_url(bucket_name: str, region: str = "", localstack_host: str = None)
 def _endpoint_url(region: str = "", localstack_host: str = None) -> str:
     if not region:
         region = AWS_REGION_US_EAST_1
-    if os.environ.get("TEST_TARGET") == "AWS_CLOUD":
+    if is_aws_cloud():
         if region == "us-east-1":
             return "https://s3.amazonaws.com"
         else:
@@ -80,14 +76,6 @@ class TestS3ListObjects:
             snapshot.match("list-objects-no-encoding", resp_dict)
 
     @markers.aws.validated
-    @markers.snapshot.skip_snapshot_verify(
-        condition=is_v2_provider,
-        paths=[
-            "$..Prefix",
-            "$..Marker",
-            "$..NextMarker",
-        ],
-    )
     def test_list_objects_next_marker(self, s3_bucket, snapshot, aws_client):
         snapshot.add_transformer(snapshot.transform.s3_api())
         snapshot.add_transformer(snapshot.transform.key_value("NextMarker"))
@@ -111,20 +99,12 @@ class TestS3ListObjects:
         snapshot.match("list-objects-marker-empty", resp)
 
     @markers.aws.validated
-    @markers.snapshot.skip_snapshot_verify(
-        condition=is_v2_provider,
-        paths=["$..Prefix"],
-    )
     def test_s3_list_objects_empty_marker(self, s3_bucket, snapshot, aws_client):
         snapshot.add_transformer(snapshot.transform.s3_api())
         resp = aws_client.s3.list_objects(Bucket=s3_bucket, Marker="")
         snapshot.match("list-objects", resp)
 
     @markers.aws.validated
-    @pytest.mark.skipif(
-        condition=LEGACY_V2_S3_PROVIDER,
-        reason="moto does not implement the right behaviour",
-    )
     def test_list_objects_marker_common_prefixes(self, s3_bucket, snapshot, aws_client):
         snapshot.add_transformer(snapshot.transform.s3_api())
         keys = [
@@ -229,10 +209,6 @@ class TestS3ListObjectsV2:
         snapshot.match("list-objects-v2-no-encoding", resp_dict)
 
     @markers.aws.validated
-    @markers.snapshot.skip_snapshot_verify(
-        condition=is_v2_provider,
-        paths=["$..Prefix"],
-    )
     def test_list_objects_v2_with_prefix_and_delimiter(self, s3_bucket, snapshot, aws_client):
         snapshot.add_transformer(snapshot.transform.s3_api())
         snapshot.add_transformer(snapshot.transform.key_value("NextContinuationToken"))
@@ -265,15 +241,6 @@ class TestS3ListObjectsV2:
         snapshot.match("list-objects-v2-3", response)
 
     @markers.aws.validated
-    @markers.snapshot.skip_snapshot_verify(
-        condition=is_v2_provider,
-        paths=[
-            "$..Error.ArgumentName",
-            "$..ContinuationToken",
-            "list-objects-v2-max-5.Contents[4].Key",
-            # this is because moto returns a Cont.Token equal to Key
-        ],
-    )
     def test_list_objects_v2_continuation_start_after(self, s3_bucket, snapshot, aws_client):
         snapshot.add_transformer(snapshot.transform.s3_api())
         snapshot.add_transformer(snapshot.transform.key_value("NextContinuationToken"))
@@ -307,10 +274,6 @@ class TestS3ListObjectsV2:
         snapshot.match("exc-continuation-token", e.value.response)
 
     @markers.aws.validated
-    @markers.snapshot.skip_snapshot_verify(
-        # moto returns parts of the key as continuation token, which messes the snapshot
-        condition=is_v2_provider,
-    )
     def test_list_objects_v2_continuation_common_prefixes(self, s3_bucket, snapshot, aws_client):
         snapshot.add_transformer(snapshot.transform.s3_api())
         snapshot.add_transformer(snapshot.transform.key_value("NextContinuationToken"))
@@ -355,7 +318,6 @@ class TestS3ListObjectsV2:
 
 class TestS3ListObjectVersions:
     @markers.aws.validated
-    @pytest.mark.skipif(condition=LEGACY_V2_S3_PROVIDER, reason="not implemented in moto")
     def test_list_objects_versions_markers(self, s3_bucket, snapshot, aws_client):
         snapshot.add_transformer(snapshot.transform.s3_api())
         aws_client.s3.put_bucket_versioning(
@@ -433,7 +395,6 @@ class TestS3ListObjectVersions:
         snapshot.match("list-objects-next-key-empty", response)
 
     @markers.aws.validated
-    @pytest.mark.skipif(condition=LEGACY_V2_S3_PROVIDER, reason="not implemented in moto")
     def test_list_object_versions_pagination_common_prefixes(self, s3_bucket, snapshot, aws_client):
         snapshot.add_transformer(snapshot.transform.s3_api())
 
@@ -488,10 +449,6 @@ class TestS3ListObjectVersions:
         snapshot.match("list-object-versions-manual-first-file", response)
 
     @markers.aws.validated
-    @markers.snapshot.skip_snapshot_verify(
-        condition=is_v2_provider,
-        paths=["$..EncodingType", "$..VersionIdMarker"],
-    )
     def test_list_objects_versions_with_prefix(
         self, s3_bucket, snapshot, aws_client, aws_http_client_factory
     ):
@@ -534,6 +491,108 @@ class TestS3ListObjectVersions:
         snapshot.match("list-objects-versions-no-encoding", resp_dict)
 
     @markers.aws.validated
+    def test_list_objects_versions_with_prefix_only_and_pagination(
+        self,
+        s3_bucket,
+        snapshot,
+        aws_client,
+    ):
+        snapshot.add_transformer(snapshot.transform.s3_api())
+        aws_client.s3.put_bucket_versioning(
+            Bucket=s3_bucket,
+            VersioningConfiguration={"Status": "Enabled"},
+        )
+
+        for _ in range(5):
+            aws_client.s3.put_object(Bucket=s3_bucket, Key="prefixed_key")
+
+        aws_client.s3.put_object(Bucket=s3_bucket, Key="non_prefixed_key")
+
+        prefixed_full = aws_client.s3.list_object_versions(Bucket=s3_bucket, Prefix="prefix")
+        snapshot.match("list-object-version-prefix-full", prefixed_full)
+
+        full_response = aws_client.s3.list_object_versions(Bucket=s3_bucket)
+        assert len(full_response["Versions"]) == 6
+
+        page_1_response = aws_client.s3.list_object_versions(
+            Bucket=s3_bucket, Prefix="prefix", MaxKeys=3
+        )
+        snapshot.match("list-object-version-prefix-page-1", page_1_response)
+        next_version_id_marker = page_1_response["NextVersionIdMarker"]
+
+        page_2_key_marker_only = aws_client.s3.list_object_versions(
+            Bucket=s3_bucket,
+            Prefix="prefix",
+            MaxKeys=4,
+            KeyMarker=page_1_response["NextKeyMarker"],
+        )
+        snapshot.match("list-object-version-prefix-key-marker-only", page_2_key_marker_only)
+
+        page_2_response = aws_client.s3.list_object_versions(
+            Bucket=s3_bucket,
+            Prefix="prefix",
+            MaxKeys=5,
+            KeyMarker=page_1_response["NextKeyMarker"],
+            VersionIdMarker=page_1_response["NextVersionIdMarker"],
+        )
+        snapshot.match("list-object-version-prefix-page-2", page_2_response)
+
+        delete_version_id_marker = aws_client.s3.delete_objects(
+            Bucket=s3_bucket,
+            Delete={
+                "Objects": [
+                    {"Key": version["Key"], "VersionId": version["VersionId"]}
+                    for version in page_1_response["Versions"]
+                ],
+            },
+        )
+        # result is unordered in AWS, pretty hard to snapshot and tested in other places anyway
+        assert len(delete_version_id_marker["Deleted"]) == 3
+        assert any(
+            version["VersionId"] == next_version_id_marker
+            for version in delete_version_id_marker["Deleted"]
+        )
+
+        page_2_response = aws_client.s3.list_object_versions(
+            Bucket=s3_bucket,
+            Prefix="prefix",
+            MaxKeys=5,
+            KeyMarker=page_1_response["NextKeyMarker"],
+            VersionIdMarker=next_version_id_marker,
+        )
+        snapshot.match("list-object-version-prefix-page-2-after-delete", page_2_response)
+
+    @markers.aws.validated
+    def test_list_objects_versions_with_prefix_only_and_pagination_many_versions(
+        self,
+        s3_bucket,
+        aws_client,
+    ):
+        aws_client.s3.put_bucket_versioning(
+            Bucket=s3_bucket,
+            VersioningConfiguration={"Status": "Enabled"},
+        )
+        # with our internal pagination system, we use characters from the alphabet (lower and upper) + digits
+        # by creating more than 100 objects, we can make sure we circle all the way around our sequencing, and properly
+        # paginate over all of them
+        for _ in range(101):
+            aws_client.s3.put_object(Bucket=s3_bucket, Key="prefixed_key")
+
+        paginator = aws_client.s3.get_paginator("list_object_versions")
+        # even if the PageIterator looks like it should be an iterator, it's actually an iterable and needs to be
+        # wrapped in `iter`
+        page_iterator = iter(
+            paginator.paginate(
+                Bucket=s3_bucket, Prefix="prefix", PaginationConfig={"PageSize": 100}
+            )
+        )
+        page_1 = next(page_iterator)
+        assert len(page_1["Versions"]) == 100
+
+        page_2 = next(page_iterator)
+        assert len(page_2["Versions"]) == 1
+
+    @markers.aws.validated
     def test_s3_list_object_versions_timestamp_precision(
         self, s3_bucket, aws_client, aws_http_client_factory
     ):
@@ -561,7 +620,6 @@ class TestS3ListObjectVersions:
 
 class TestS3ListMultipartUploads:
     @markers.aws.validated
-    @pytest.mark.skipif(condition=LEGACY_V2_S3_PROVIDER, reason="not implemented in moto")
     def test_list_multiparts_next_marker(self, s3_bucket, snapshot, aws_client):
         snapshot.add_transformer(snapshot.transform.s3_api())
         snapshot.add_transformers_list(
@@ -667,7 +725,6 @@ class TestS3ListMultipartUploads:
         snapshot.match("list-multiparts-next-key-empty", response)
 
     @markers.aws.validated
-    @pytest.mark.skipif(condition=LEGACY_V2_S3_PROVIDER, reason="not implemented in moto")
     def test_list_multiparts_with_prefix_and_delimiter(
         self, s3_bucket, snapshot, aws_client, aws_http_client_factory
     ):
@@ -714,64 +771,6 @@ class TestS3ListMultipartUploads:
         snapshot.match("list-multiparts-no-encoding", resp_dict)
 
     @markers.aws.validated
-    @pytest.mark.skipif(
-        condition=not config.LEGACY_V2_S3_PROVIDER and not is_aws_cloud(),
-        reason="Better tests for V3",
-    )
-    @markers.snapshot.skip_snapshot_verify(
-        condition=is_v2_provider,
-        paths=[
-            "$..ServerSideEncryption",
-            "$..NextKeyMarker",
-            "$..NextUploadIdMarker",
-        ],
-    )
-    def test_list_multipart_uploads_parameters(self, s3_bucket, snapshot, aws_client):
-        """
-        This test is for the legacy_v2 provider, as the behaviour is not implemented in moto but just ignored and not
-        raising a NotImplemented exception. Safe to remove when removing legacy_v2 tests
-        """
-        snapshot.add_transformer(
-            [
-                snapshot.transform.key_value("Bucket", reference_replacement=False),
-                snapshot.transform.key_value("UploadId"),
-                snapshot.transform.key_value("DisplayName", reference_replacement=False),
-                snapshot.transform.key_value("ID", reference_replacement=False),
-            ]
-        )
-        key_name = "test-multipart-uploads-parameters"
-        response = aws_client.s3.create_multipart_upload(Bucket=s3_bucket, Key=key_name)
-        snapshot.match("create-multipart", response)
-        upload_id = response["UploadId"]
-
-        # Write contents to memory rather than a file.
-        upload_file_object = BytesIO(b"test")
-
-        upload_resp = aws_client.s3.upload_part(
-            Bucket=s3_bucket,
-            Key=key_name,
-            Body=upload_file_object,
-            PartNumber=1,
-            UploadId=upload_id,
-        )
-        snapshot.match("upload-part", upload_resp)
-
-        response = aws_client.s3.list_multipart_uploads(Bucket=s3_bucket)
-        snapshot.match("list-uploads-basic", response)
-
-        # TODO: not applied yet, just check that the status is the same (not raising NotImplemented)
-        response = aws_client.s3.list_multipart_uploads(Bucket=s3_bucket, MaxUploads=1)
-        snapshot.match("list-uploads-max-uploads", response)
-
-        # TODO: not applied yet, just check that the status is the same (not raising NotImplemented)
-        response = aws_client.s3.list_multipart_uploads(Bucket=s3_bucket, Delimiter="/")
-        snapshot.match("list-uploads-delimiter", response)
-
-    @markers.aws.validated
-    @pytest.mark.skipif(
-        condition=LEGACY_V2_S3_PROVIDER,
-        reason="not implemented in moto",
-    )
     def test_list_multipart_uploads_marker_common_prefixes(self, s3_bucket, snapshot, aws_client):
         snapshot.add_transformer(snapshot.transform.s3_api())
         snapshot.add_transformers_list(
@@ -846,7 +845,6 @@ class TestS3ListMultipartUploads:
 
 
 class TestS3ListParts:
-    @pytest.mark.skipif(condition=LEGACY_V2_S3_PROVIDER, reason="not implemented in moto")
     @markers.aws.validated
     def test_list_parts_pagination(self, s3_bucket, snapshot, aws_client):
         snapshot.add_transformer(
@@ -902,9 +900,6 @@ class TestS3ListParts:
         )
         snapshot.match("list-parts-wrong-part", response)
 
-    @pytest.mark.skipif(
-        condition=LEGACY_V2_S3_PROVIDER, reason="moto does not handle empty query string parameters"
-    )
     @markers.aws.validated
     def test_list_parts_empty_part_number_marker(self, s3_bucket, snapshot, aws_client_factory):
         # we need to disable validation for this test

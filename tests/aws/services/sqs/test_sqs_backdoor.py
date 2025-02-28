@@ -1,10 +1,17 @@
+import time
+from threading import Timer
+
 import pytest
 import requests
 import xmltodict
 from botocore.exceptions import ClientError
 
 from localstack import config
-from localstack.constants import TEST_AWS_ACCOUNT_ID
+from localstack.services.sqs.constants import (
+    HEADER_LOCALSTACK_SQS_OVERRIDE_MESSAGE_COUNT,
+    HEADER_LOCALSTACK_SQS_OVERRIDE_WAIT_TIME_SECONDS,
+)
+from localstack.services.sqs.provider import MAX_NUMBER_OF_MESSAGES
 from localstack.services.sqs.utils import parse_queue_url
 from localstack.testing.pytest import markers
 from localstack.utils.strings import short_uid
@@ -27,6 +34,7 @@ def _parse_attribute_map(json_message: dict) -> dict[str, str]:
     return {attr["Name"]: attr["Value"] for attr in json_message["Attribute"]}
 
 
+# @pytest.mark.usefixtures("openapi_validate")
 class TestSqsDeveloperEndpoints:
     @markers.aws.only_localstack
     @pytest.mark.parametrize("strategy", ["standard", "domain", "path"])
@@ -49,7 +57,7 @@ class TestSqsDeveloperEndpoints:
         assert attributes[1]["ApproximateReceiveCount"] == "0"
 
         # do a real receive op that has a side effect
-        response = aws_client.sqs.receive_message(
+        response = aws_client.sqs_query.receive_message(
             QueueUrl=queue_url, VisibilityTimeout=0, MaxNumberOfMessages=1, AttributeNames=["All"]
         )
         assert response["Messages"][0]["Body"] == "message-1"
@@ -65,18 +73,20 @@ class TestSqsDeveloperEndpoints:
 
     @markers.aws.only_localstack
     @pytest.mark.parametrize("strategy", ["standard", "domain", "path"])
+    @pytest.mark.parametrize("protocol", ["query", "json"])
     def test_list_messages_as_botocore_endpoint_url(
-        self, sqs_create_queue, aws_client, aws_client_factory, monkeypatch, strategy
+        self, sqs_create_queue, aws_client, aws_client_factory, monkeypatch, strategy, protocol
     ):
         monkeypatch.setattr(config, "SQS_ENDPOINT_STRATEGY", strategy)
 
         queue_url = sqs_create_queue()
 
-        aws_client.sqs.send_message(QueueUrl=queue_url, MessageBody="message-1")
-        aws_client.sqs.send_message(QueueUrl=queue_url, MessageBody="message-2")
+        aws_client.sqs_query.send_message(QueueUrl=queue_url, MessageBody="message-1")
+        aws_client.sqs_query.send_message(QueueUrl=queue_url, MessageBody="message-2")
 
         # use the developer endpoint as boto client URL
-        client = aws_client_factory(endpoint_url="http://localhost:4566/_aws/sqs/messages").sqs
+        factory = aws_client_factory(endpoint_url="http://localhost:4566/_aws/sqs/messages")
+        client = factory.sqs_query if protocol == "query" else factory.sqs
         # max messages is ignored
         response = client.receive_message(QueueUrl=queue_url, MaxNumberOfMessages=1)
 
@@ -89,8 +99,9 @@ class TestSqsDeveloperEndpoints:
 
     @markers.aws.only_localstack
     @pytest.mark.parametrize("strategy", ["standard", "domain", "path"])
+    @pytest.mark.parametrize("protocol", ["query", "json"])
     def test_fifo_list_messages_as_botocore_endpoint_url(
-        self, sqs_create_queue, aws_client, aws_client_factory, monkeypatch, strategy
+        self, sqs_create_queue, aws_client, aws_client_factory, monkeypatch, strategy, protocol
     ):
         monkeypatch.setattr(config, "SQS_ENDPOINT_STRATEGY", strategy)
 
@@ -107,7 +118,8 @@ class TestSqsDeveloperEndpoints:
         aws_client.sqs.send_message(QueueUrl=queue_url, MessageBody="message-3", MessageGroupId="2")
 
         # use the developer endpoint as boto client URL
-        client = aws_client_factory(endpoint_url="http://localhost:4566/_aws/sqs/messages").sqs
+        factory = aws_client_factory(endpoint_url="http://localhost:4566/_aws/sqs/messages")
+        client = factory.sqs_query if protocol == "query" else factory.sqs
         # max messages is ignored
         response = client.receive_message(QueueUrl=queue_url, MaxNumberOfMessages=1)
 
@@ -125,14 +137,16 @@ class TestSqsDeveloperEndpoints:
 
     @markers.aws.only_localstack
     @pytest.mark.parametrize("strategy", ["standard", "domain", "path"])
+    @pytest.mark.parametrize("protocol", ["query", "json"])
     def test_list_messages_with_invalid_action_raises_error(
-        self, sqs_create_queue, aws_client_factory, monkeypatch, strategy
+        self, sqs_create_queue, aws_client_factory, monkeypatch, strategy, protocol
     ):
         monkeypatch.setattr(config, "SQS_ENDPOINT_STRATEGY", strategy)
 
         queue_url = sqs_create_queue()
 
-        client = aws_client_factory(endpoint_url="http://localhost:4566/_aws/sqs/messages").sqs
+        factory = aws_client_factory(endpoint_url="http://localhost:4566/_aws/sqs/messages")
+        client = factory.sqs_query if protocol == "query" else factory.sqs
 
         with pytest.raises(ClientError) as e:
             client.send_message(QueueUrl=queue_url, MessageBody="foobar")
@@ -145,7 +159,9 @@ class TestSqsDeveloperEndpoints:
 
     @markers.aws.only_localstack
     @pytest.mark.parametrize("strategy", ["standard", "domain", "path"])
-    def test_list_messages_as_json(self, sqs_create_queue, monkeypatch, aws_client, strategy):
+    def test_list_messages_as_json(
+        self, sqs_create_queue, monkeypatch, aws_client, account_id, strategy
+    ):
         monkeypatch.setattr(config, "SQS_ENDPOINT_STRATEGY", strategy)
 
         queue_url = sqs_create_queue()
@@ -171,7 +187,7 @@ class TestSqsDeveloperEndpoints:
 
         # make sure attributes are returned
         attributes = {a["Name"]: a["Value"] for a in messages[0]["Attribute"]}
-        assert attributes["SenderId"] == TEST_AWS_ACCOUNT_ID
+        assert attributes["SenderId"] == account_id
         assert "ApproximateReceiveCount" in attributes
         assert "ApproximateFirstReceiveTimestamp" in attributes
         assert "SentTimestamp" in attributes
@@ -353,3 +369,117 @@ class TestSqsDeveloperEndpoints:
         assert response.status_code == 400
         doc = response.json()
         assert doc["ErrorResponse"]["Error"]["Code"] == "AWS.SimpleQueueService.NonExistentQueue"
+
+
+class TestSqsOverrideHeaders:
+    @markers.aws.only_localstack
+    def test_receive_message_override_max_number_of_messages(
+        self, sqs_create_queue, aws_client_factory
+    ):
+        # Create standalone boto3 client since registering hooks to the session-wide
+        # aws_client (from the fixture) will have side-effects.
+        sqs_client = aws_client_factory().sqs
+
+        override_max_number_of_messages = 20
+        queue_url = sqs_create_queue()
+
+        for i in range(override_max_number_of_messages):
+            sqs_client.send_message(QueueUrl=queue_url, MessageBody=f"message-{i}")
+
+        with pytest.raises(ClientError):
+            sqs_client.receive_message(
+                QueueUrl=queue_url,
+                VisibilityTimeout=0,
+                MaxNumberOfMessages=override_max_number_of_messages,
+                AttributeNames=["All"],
+            )
+
+        def _handle_receive_message_override(params, context, **kwargs):
+            if not (requested_count := params.get("MaxNumberOfMessages")):
+                return
+            context[HEADER_LOCALSTACK_SQS_OVERRIDE_MESSAGE_COUNT] = str(requested_count)
+            params["MaxNumberOfMessages"] = min(MAX_NUMBER_OF_MESSAGES, requested_count)
+
+        def _handler_inject_header(params, context, **kwargs):
+            if override_message_count := context.pop(
+                HEADER_LOCALSTACK_SQS_OVERRIDE_MESSAGE_COUNT, None
+            ):
+                params["headers"][HEADER_LOCALSTACK_SQS_OVERRIDE_MESSAGE_COUNT] = (
+                    override_message_count
+                )
+
+        sqs_client.meta.events.register(
+            "provide-client-params.sqs.ReceiveMessage", _handle_receive_message_override
+        )
+
+        sqs_client.meta.events.register("before-call.sqs.ReceiveMessage", _handler_inject_header)
+
+        response = sqs_client.receive_message(
+            QueueUrl=queue_url,
+            VisibilityTimeout=30,
+            MaxNumberOfMessages=override_max_number_of_messages,
+            AttributeNames=["All"],
+        )
+
+        messages = response.get("Messages", [])
+        assert len(messages) == 20
+
+    @markers.aws.only_localstack
+    def test_receive_message_override_message_wait_time_seconds(
+        self, sqs_create_queue, aws_client_factory
+    ):
+        sqs_client = aws_client_factory().sqs
+        override_message_wait_time_seconds = 30
+        queue_url = sqs_create_queue()
+
+        with pytest.raises(ClientError):
+            sqs_client.receive_message(
+                QueueUrl=queue_url,
+                VisibilityTimeout=0,
+                MaxNumberOfMessages=MAX_NUMBER_OF_MESSAGES,
+                WaitTimeSeconds=override_message_wait_time_seconds,
+                AttributeNames=["All"],
+            )
+
+        def _handle_receive_message_override(params, context, **kwargs):
+            if not (requested_wait_time := params.get("WaitTimeSeconds")):
+                return
+            context[HEADER_LOCALSTACK_SQS_OVERRIDE_WAIT_TIME_SECONDS] = str(requested_wait_time)
+            params["WaitTimeSeconds"] = min(20, requested_wait_time)
+
+        def _handler_inject_header(params, context, **kwargs):
+            if override_wait_time := context.pop(
+                HEADER_LOCALSTACK_SQS_OVERRIDE_WAIT_TIME_SECONDS, None
+            ):
+                params["headers"][HEADER_LOCALSTACK_SQS_OVERRIDE_WAIT_TIME_SECONDS] = (
+                    override_wait_time
+                )
+
+        sqs_client.meta.events.register(
+            "provide-client-params.sqs.ReceiveMessage", _handle_receive_message_override
+        )
+
+        sqs_client.meta.events.register("before-call.sqs.ReceiveMessage", _handler_inject_header)
+
+        def _send_message():
+            sqs_client.send_message(QueueUrl=queue_url, MessageBody=f"message-{short_uid()}")
+
+        # Populate with 9 messages (1 below the MaxNumberOfMessages threshold).
+        # This should cause long-polling to exit since MaxNumberOfMessages is met.
+        for _ in range(9):
+            _send_message()
+
+        Timer(25, _send_message).start()  # send message asynchronously after 25 seconds
+
+        start_t = time.perf_counter()
+        response = sqs_client.receive_message(
+            QueueUrl=queue_url,
+            VisibilityTimeout=30,
+            MaxNumberOfMessages=MAX_NUMBER_OF_MESSAGES,
+            WaitTimeSeconds=override_message_wait_time_seconds,
+            AttributeNames=["All"],
+        )
+        assert time.perf_counter() - start_t >= 25
+
+        messages = response.get("Messages", [])
+        assert len(messages) == 10

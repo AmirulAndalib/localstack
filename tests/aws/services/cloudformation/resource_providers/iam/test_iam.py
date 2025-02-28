@@ -234,3 +234,102 @@ def test_managed_policy_with_empty_resource(deploy_cfn_template, snapshot, aws_c
     policy_arn = stack.outputs["PolicyArn"]
     policy = aws_client.iam.get_policy(PolicyArn=policy_arn)
     snapshot.match("managed_policy", policy)
+
+
+@markers.aws.validated
+@markers.snapshot.skip_snapshot_verify(
+    paths=[
+        "$..ServerCertificate.Tags",
+    ]
+)
+def test_server_certificate(deploy_cfn_template, snapshot, aws_client):
+    stack = deploy_cfn_template(
+        template_path=os.path.join(
+            os.path.dirname(__file__), "../../../../templates/iam_server_certificate.yaml"
+        ),
+        parameters={"certificateName": f"server-certificate-{short_uid()}"},
+    )
+    snapshot.match("outputs", stack.outputs)
+
+    certificate = aws_client.iam.get_server_certificate(
+        ServerCertificateName=stack.outputs["ServerCertificateName"]
+    )
+    snapshot.match("certificate", certificate)
+
+    stack.destroy()
+    with pytest.raises(Exception) as e:
+        aws_client.iam.get_server_certificate(
+            ServerCertificateName=stack.outputs["ServerCertificateName"]
+        )
+    snapshot.match("get_server_certificate_error", e.value.response)
+
+    snapshot.add_transformer(
+        snapshot.transform.key_value("ServerCertificateName", "server-certificate-name")
+    )
+    snapshot.add_transformer(
+        snapshot.transform.key_value("ServerCertificateId", "server-certificate-id")
+    )
+
+
+@markers.aws.validated
+def test_cfn_handle_iam_role_resource_no_role_name(deploy_cfn_template, aws_client):
+    stack = deploy_cfn_template(
+        template_path=os.path.join(
+            os.path.dirname(__file__), "../../../../templates/iam_role_defaults.yml"
+        )
+    )
+    role_path_prefix = "/test-role-prefix/"
+
+    rs = aws_client.iam.list_roles(PathPrefix=role_path_prefix)
+    assert len(rs["Roles"]) == 1
+
+    stack.destroy()
+
+    rs = aws_client.iam.list_roles(PathPrefix=role_path_prefix)
+    assert not rs["Roles"]
+
+
+@markers.aws.validated
+def test_updating_stack_with_iam_role(deploy_cfn_template, aws_client):
+    lambda_role_name = f"lambda-role-{short_uid()}"
+    lambda_function_name = f"lambda-function-{short_uid()}"
+
+    # Create stack and wait for 'CREATE_COMPLETE' status of the stack
+    stack = deploy_cfn_template(
+        template_path=os.path.join(
+            os.path.dirname(__file__), "../../../../templates/template7.json"
+        ),
+        parameters={
+            "LambdaRoleName": lambda_role_name,
+            "LambdaFunctionName": lambda_function_name,
+        },
+    )
+
+    function_description = aws_client.lambda_.get_function(FunctionName=lambda_function_name)
+    assert stack.outputs["TestStackRoleName"] in function_description.get("Configuration").get(
+        "Role"
+    )
+    assert stack.outputs["TestStackRoleName"] == lambda_role_name
+
+    # Generate new names for lambda and IAM Role
+    lambda_role_name_new = f"lambda-role-new-{short_uid()}"
+    lambda_function_name_new = f"lambda-function-new-{short_uid()}"
+
+    # Update stack and wait for 'UPDATE_COMPLETE' status of the stack
+    stack = deploy_cfn_template(
+        is_update=True,
+        template_path=os.path.join(
+            os.path.dirname(__file__), "../../../../templates/template7.json"
+        ),
+        stack_name=stack.stack_name,
+        parameters={
+            "LambdaRoleName": lambda_role_name_new,
+            "LambdaFunctionName": lambda_function_name_new,
+        },
+    )
+
+    function_description = aws_client.lambda_.get_function(FunctionName=lambda_function_name_new)
+    assert stack.outputs["TestStackRoleName"] in function_description.get("Configuration").get(
+        "Role"
+    )
+    assert stack.outputs["TestStackRoleName"] == lambda_role_name_new

@@ -10,7 +10,7 @@ from localstack.testing.pytest import markers
 from localstack.utils.container_networking import get_main_container_network
 from localstack.utils.docker_utils import DOCKER_CLIENT, get_host_path_for_path_in_docker
 from localstack.utils.files import load_file, mkdir, rm_rf
-from localstack.utils.strings import short_uid, to_str
+from localstack.utils.strings import short_uid
 from localstack.utils.sync import retry
 from localstack.utils.testutil import create_lambda_archive
 from tests.aws.services.lambda_.test_lambda import TEST_LAMBDA_ENV, THIS_FOLDER
@@ -28,10 +28,10 @@ class TestHotReloading:
     @pytest.mark.parametrize(
         "runtime,handler_file,handler_filename",
         [
-            (Runtime.nodejs18_x, HOT_RELOADING_NODEJS_HANDLER, "handler.mjs"),
-            (Runtime.python3_9, HOT_RELOADING_PYTHON_HANDLER, "handler.py"),
+            (Runtime.nodejs20_x, HOT_RELOADING_NODEJS_HANDLER, "handler.mjs"),
+            (Runtime.python3_12, HOT_RELOADING_PYTHON_HANDLER, "handler.py"),
         ],
-        ids=["nodejs18.x", "python3.9"],
+        ids=["nodejs20.x", "python3.12"],
     )
     @markers.aws.only_localstack
     def test_hot_reloading(
@@ -45,6 +45,9 @@ class TestHotReloading:
         aws_client,
     ):
         """Test hot reloading of lambda code"""
+        # Hot reloading is debounced with 500ms
+        # 0.6 works on Linux, but it takes slightly longer on macOS
+        sleep_time = 0.8
         function_name = f"test-hot-reloading-{short_uid()}"
         hot_reloading_bucket = config.BUCKET_MARKER_LOCAL
         tmp_path = config.dirs.mounted_tmp
@@ -64,23 +67,23 @@ class TestHotReloading:
             Runtime=runtime,
         )
         response = aws_client.lambda_.invoke(FunctionName=function_name, Payload=b"{}")
-        response_dict = json.loads(response["Payload"].read())
+        response_dict = json.load(response["Payload"])
         assert response_dict["counter"] == 1
         assert response_dict["constant"] == "value1"
         response = aws_client.lambda_.invoke(FunctionName=function_name, Payload=b"{}")
-        response_dict = json.loads(response["Payload"].read())
+        response_dict = json.load(response["Payload"])
         assert response_dict["counter"] == 2
         assert response_dict["constant"] == "value1"
         with open(os.path.join(hot_reloading_dir_path, handler_filename), mode="wt") as f:
             f.write(function_content.replace("value1", "value2"))
         # we have to sleep here, since the hot reloading is debounced with 500ms
-        time.sleep(0.6)
+        time.sleep(sleep_time)
         response = aws_client.lambda_.invoke(FunctionName=function_name, Payload=b"{}")
-        response_dict = json.loads(response["Payload"].read())
+        response_dict = json.load(response["Payload"])
         assert response_dict["counter"] == 1
         assert response_dict["constant"] == "value2"
         response = aws_client.lambda_.invoke(FunctionName=function_name, Payload=b"{}")
-        response_dict = json.loads(response["Payload"].read())
+        response_dict = json.load(response["Payload"])
         assert response_dict["counter"] == 2
         assert response_dict["constant"] == "value2"
 
@@ -88,17 +91,17 @@ class TestHotReloading:
         test_folder = os.path.join(hot_reloading_dir_path, "test-folder")
         mkdir(test_folder)
         # make sure the creation of the folder triggered reload
-        time.sleep(0.6)
+        time.sleep(sleep_time)
         response = aws_client.lambda_.invoke(FunctionName=function_name, Payload=b"{}")
-        response_dict = json.loads(response["Payload"].read())
+        response_dict = json.load(response["Payload"])
         assert response_dict["counter"] == 1
         assert response_dict["constant"] == "value2"
         # now writing something in the new folder to check if it will reload
         with open(os.path.join(test_folder, "test-file"), mode="wt") as f:
             f.write("test-content")
-        time.sleep(0.6)
+        time.sleep(sleep_time)
         response = aws_client.lambda_.invoke(FunctionName=function_name, Payload=b"{}")
-        response_dict = json.loads(response["Payload"].read())
+        response_dict = json.load(response["Payload"])
         assert response_dict["counter"] == 1
         assert response_dict["constant"] == "value2"
 
@@ -128,9 +131,60 @@ class TestHotReloading:
             Handler="handler.handler",
             Code={"S3Bucket": hot_reloading_bucket, "S3Key": mount_path},
             Role=lambda_su_role,
-            Runtime=Runtime.nodejs18_x,
+            Runtime=Runtime.nodejs20_x,
         )
         aws_client.lambda_.publish_version(FunctionName=function_name, CodeSha256="zipfilehash")
+
+    @markers.aws.only_localstack
+    def test_hot_reloading_error_path_not_absolute(
+        self,
+        create_lambda_function_aws,
+        lambda_su_role,
+        cleanups,
+        aws_client,
+    ):
+        """Tests validation of hot reloading paths"""
+        function_name = f"test-hot-reloading-{short_uid()}"
+        hot_reloading_bucket = config.BUCKET_MARKER_LOCAL
+        with pytest.raises(Exception):
+            aws_client.lambda_.create_function(
+                FunctionName=function_name,
+                Handler="handler.handler",
+                Code={"S3Bucket": hot_reloading_bucket, "S3Key": "not/an/absolute/path"},
+                Role=lambda_su_role,
+                Runtime=Runtime.python3_12,
+            )
+
+    @markers.aws.only_localstack
+    def test_hot_reloading_environment_placeholder(
+        self, create_lambda_function_aws, lambda_su_role, cleanups, aws_client, monkeypatch
+    ):
+        """Test hot reloading of lambda code when the S3Key containers an environment variable placeholder like $DIR"""
+        function_name = f"test-hot-reloading-{short_uid()}"
+        hot_reloading_bucket = config.BUCKET_MARKER_LOCAL
+        tmp_path = config.dirs.mounted_tmp
+        hot_reloading_dir_path = os.path.join(tmp_path, f"hot-reload-{short_uid()}")
+        mkdir(hot_reloading_dir_path)
+        cleanups.append(lambda: rm_rf(hot_reloading_dir_path))
+        function_content = load_file(HOT_RELOADING_PYTHON_HANDLER)
+        with open(os.path.join(hot_reloading_dir_path, "handler.py"), mode="wt") as f:
+            f.write(function_content)
+
+        mount_path = get_host_path_for_path_in_docker(hot_reloading_dir_path)
+        head, tail = os.path.split(mount_path)
+        monkeypatch.setenv("HEAD_DIR", head)
+
+        create_lambda_function_aws(
+            FunctionName=function_name,
+            Handler="handler.handler",
+            Code={"S3Bucket": hot_reloading_bucket, "S3Key": f"$HEAD_DIR/{tail}"},
+            Role=lambda_su_role,
+            Runtime=Runtime.python3_12,
+        )
+        response = aws_client.lambda_.invoke(FunctionName=function_name, Payload=b"{}")
+        response_dict = json.load(response["Payload"])
+        assert response_dict["counter"] == 1
+        assert response_dict["constant"] == "value1"
 
 
 class TestDockerFlags:
@@ -143,12 +197,11 @@ class TestDockerFlags:
         create_lambda_function(
             handler_file=TEST_LAMBDA_ENV,
             func_name=function_name,
-            runtime=Runtime.python3_9,
+            runtime=Runtime.python3_12,
         )
         aws_client.lambda_.get_waiter("function_active_v2").wait(FunctionName=function_name)
         result = aws_client.lambda_.invoke(FunctionName=function_name, Payload="{}")
-        result_data = result["Payload"].read()
-        result_data = json.loads(to_str(result_data))
+        result_data = json.load(result["Payload"])
         assert {"Hello": env_value} == result_data
 
     @markers.aws.only_localstack
@@ -181,13 +234,13 @@ class TestDockerFlags:
         zip_file = create_lambda_archive(
             load_file(LAMBDA_NETWORKS_PYTHON_HANDLER),
             get_content=True,
-            runtime=Runtime.python3_9,
+            runtime=Runtime.python3_12,
         )
         aws_client.lambda_.create_function(
             FunctionName=function_name,
             Code={"ZipFile": zip_file},
             Handler="handler.handler",
-            Runtime=Runtime.python3_9,
+            Runtime=Runtime.python3_12,
             Role=lambda_su_role,
         )
         cleanups.append(lambda: aws_client.lambda_.delete_function(FunctionName=function_name))
@@ -196,8 +249,7 @@ class TestDockerFlags:
         result = aws_client.lambda_.invoke(
             FunctionName=function_name, Payload=json.dumps({"url": f"http://{container_name}"})
         )
-        result_data = result["Payload"].read()
-        result_data = json.loads(to_str(result_data))
+        result_data = json.load(result["Payload"])
         assert result_data["status"] == 200
         assert "nginx" in result_data["response"]
 
@@ -214,7 +266,7 @@ class TestLambdaDNS:
         create_lambda_function(
             handler_file=LAMBDA_NETWORKS_PYTHON_HANDLER,
             func_name=function_name,
-            runtime=Runtime.python3_11,
+            runtime=Runtime.python3_12,
         )
 
         result = aws_client.lambda_.invoke(
@@ -226,7 +278,6 @@ class TestLambdaDNS:
             ),
         )
         assert "FunctionError" not in result
-        result_data = result["Payload"].read()
-        result_data = json.loads(to_str(result_data))
+        result_data = json.load(result["Payload"])
         assert result_data["status"] == 200
         assert "services" in result_data["response"]

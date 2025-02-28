@@ -11,13 +11,13 @@ from urllib.request import Request, urlopen
 
 import pytest
 import requests
+from botocore.exceptions import ClientError
 
 from localstack import config
-from localstack.constants import TEST_AWS_ACCESS_KEY_ID, TEST_AWS_REGION_NAME
 from localstack.services.cloudwatch.provider import PATH_GET_RAW_METRICS
 from localstack.testing.aws.util import is_aws_cloud
+from localstack.testing.config import TEST_AWS_ACCESS_KEY_ID
 from localstack.testing.pytest import markers
-from localstack.testing.pytest.snapshot import is_aws
 from localstack.testing.snapshots.transformer_utility import TransformerUtility
 from localstack.utils.aws import arns
 from localstack.utils.aws.request_context import mock_aws_request_headers
@@ -28,12 +28,11 @@ if TYPE_CHECKING:
     from mypy_boto3_logs import CloudWatchLogsClient
 PUBLICATION_RETRIES = 5
 
-
 LOG = logging.getLogger(__name__)
 
 
 def is_old_provider():
-    return os.environ.get("PROVIDER_OVERRIDE_CLOUDWATCH") != "v2" and not is_aws_cloud()
+    return os.environ.get("PROVIDER_OVERRIDE_CLOUDWATCH") == "v1" and not is_aws_cloud()
 
 
 class TestCloudwatch:
@@ -76,7 +75,7 @@ class TestCloudwatch:
         snapshot.match("get_metric_statistics", stats)
 
     @markers.aws.only_localstack
-    def test_put_metric_data_gzip(self, aws_client):
+    def test_put_metric_data_gzip(self, aws_client, region_name):
         metric_name = "test-metric"
         namespace = "namespace"
         data = (
@@ -90,11 +89,11 @@ class TestCloudwatch:
         headers = mock_aws_request_headers(
             "cloudwatch",
             aws_access_key_id=TEST_AWS_ACCESS_KEY_ID,
-            region_name=TEST_AWS_REGION_NAME,
+            region_name=region_name,
             internal=True,
         )
         authorization = mock_aws_request_headers(
-            "monitoring", aws_access_key_id=TEST_AWS_ACCESS_KEY_ID, region_name=TEST_AWS_REGION_NAME
+            "monitoring", aws_access_key_id=TEST_AWS_ACCESS_KEY_ID, region_name=region_name
         )["Authorization"]
 
         headers.update(
@@ -523,7 +522,7 @@ class TestCloudwatch:
 
     @markers.aws.only_localstack
     # this feature was a customer request and added with https://github.com/localstack/localstack/pull/3535
-    def test_raw_metric_data(self, aws_client):
+    def test_raw_metric_data(self, aws_client, region_name):
         """
         tests internal endpoint at "/_aws/cloudwatch/metrics/raw"
         """
@@ -533,7 +532,7 @@ class TestCloudwatch:
         )
         # the new v2 provider doesn't need the headers, will return results for all accounts/regions
         headers = mock_aws_request_headers(
-            "cloudwatch", aws_access_key_id=TEST_AWS_ACCESS_KEY_ID, region_name=TEST_AWS_REGION_NAME
+            "cloudwatch", aws_access_key_id=TEST_AWS_ACCESS_KEY_ID, region_name=region_name
         )
         url = f"{config.external_service_url()}{PATH_GET_RAW_METRICS}"
         result = requests.get(url, headers=headers)
@@ -580,7 +579,7 @@ class TestCloudwatch:
 
     @markers.aws.validated
     def test_describe_alarms_converts_date_format_correctly(self, aws_client, cleanups):
-        alarm_name = f"a-{short_uid()}"
+        alarm_name = f"a-{short_uid()}:test"
         metric_name = f"test-metric-{short_uid()}"
         namespace = f"test-ns-{short_uid()}"
         aws_client.cloudwatch.put_metric_alarm(
@@ -658,7 +657,10 @@ class TestCloudwatch:
         snapshot.match("describe_alarms", describe_alarms)
         alarm = describe_alarms["MetricAlarms"][0]
         alarm_arn = alarm["AlarmArn"]
+        list_tags_for_resource = aws_client.cloudwatch.list_tags_for_resource(ResourceARN=alarm_arn)
+        snapshot.match("list_tags_for_resource_empty ", list_tags_for_resource)
 
+        # add tags
         tags = [{"Key": "tag1", "Value": "foo"}, {"Key": "tag2", "Value": "bar"}]
         response = aws_client.cloudwatch.tag_resource(ResourceARN=alarm_arn, Tags=tags)
         assert 200 == response["ResponseMetadata"]["HTTPStatusCode"]
@@ -987,6 +989,260 @@ class TestCloudwatch:
         snapshot.match("reset-alarm", describe_alarm)
 
     @markers.aws.validated
+    @pytest.mark.skipif(is_old_provider(), reason="New test for v2 provider")
+    def test_trigger_composite_alarm(
+        self, sns_create_topic, sqs_create_queue, aws_client, cleanups, snapshot
+    ):
+        # create topics for state 'ALARM' and 'OK' of the composite alarm
+        topic_name_alarm = f"topic-alarm-{short_uid()}"
+        topic_name_ok = f"topic-ok-{short_uid()}"
+
+        sns_topic_alarm = sns_create_topic(Name=topic_name_alarm)
+        topic_arn_alarm = sns_topic_alarm["TopicArn"]
+        sns_topic_ok = sns_create_topic(Name=topic_name_ok)
+        topic_arn_ok = sns_topic_ok["TopicArn"]
+
+        # TODO extract SNS-to-SQS into a fixture
+        # create queues for 'ALARM' and 'OK' of the composite alarm (will receive sns messages)
+        queue_url_alarm = sqs_create_queue(QueueName=f"AlarmQueue-{short_uid()}")
+        queue_url_ok = sqs_create_queue(QueueName=f"OKQueue-{short_uid()}")
+
+        arn_queue_alarm = aws_client.sqs.get_queue_attributes(
+            QueueUrl=queue_url_alarm, AttributeNames=["QueueArn"]
+        )["Attributes"]["QueueArn"]
+        arn_queue_ok = aws_client.sqs.get_queue_attributes(
+            QueueUrl=queue_url_ok, AttributeNames=["QueueArn"]
+        )["Attributes"]["QueueArn"]
+        aws_client.sqs.set_queue_attributes(
+            QueueUrl=queue_url_alarm,
+            Attributes={"Policy": get_sqs_policy(arn_queue_alarm, topic_arn_alarm)},
+        )
+        aws_client.sqs.set_queue_attributes(
+            QueueUrl=queue_url_ok, Attributes={"Policy": get_sqs_policy(arn_queue_ok, topic_arn_ok)}
+        )
+
+        # subscribe to SQS
+        subscription_alarm = aws_client.sns.subscribe(
+            TopicArn=topic_arn_alarm, Protocol="sqs", Endpoint=arn_queue_alarm
+        )
+        cleanups.append(
+            lambda: aws_client.sns.unsubscribe(
+                SubscriptionArn=subscription_alarm["SubscriptionArn"]
+            )
+        )
+        subscription_ok = aws_client.sns.subscribe(
+            TopicArn=topic_arn_ok, Protocol="sqs", Endpoint=arn_queue_ok
+        )
+        cleanups.append(
+            lambda: aws_client.sns.unsubscribe(SubscriptionArn=subscription_ok["SubscriptionArn"])
+        )
+
+        # put metric alarms that would be parts of a composite one
+        # TODO extract put metric alarm and associated cleanups into a fixture
+        def _put_metric_alarm(alarm_name: str):
+            aws_client.cloudwatch.put_metric_alarm(
+                AlarmName=alarm_name,
+                MetricName="CPUUtilization",
+                Namespace="AWS/EC2",
+                EvaluationPeriods=1,
+                Period=10,
+                Statistic="Sum",
+                ComparisonOperator="GreaterThanThreshold",
+                Threshold=30,
+            )
+            cleanups.append(lambda: aws_client.cloudwatch.delete_alarms(AlarmNames=[alarm_name]))
+
+        alarm_1_name = f"simple-alarm-1-{short_uid()}"
+        alarm_2_name = f"simple-alarm-2-{short_uid()}"
+
+        _put_metric_alarm(alarm_1_name)
+        _put_metric_alarm(alarm_2_name)
+
+        alarm_1_arn = aws_client.cloudwatch.describe_alarms(AlarmNames=[alarm_1_name])[
+            "MetricAlarms"
+        ][0]["AlarmArn"]
+        alarm_2_arn = aws_client.cloudwatch.describe_alarms(AlarmNames=[alarm_2_name])[
+            "MetricAlarms"
+        ][0]["AlarmArn"]
+
+        # put composite alarm that is triggered when either of metric alarms is triggered.
+        composite_alarm_name = f"composite-alarm-{short_uid()}"
+        composite_alarm_description = "composite alarm description"
+
+        composite_alarm_rule = f'ALARM("{alarm_1_arn}") OR ALARM("{alarm_2_arn}")'
+
+        put_composite_alarm_response = aws_client.cloudwatch.put_composite_alarm(
+            AlarmName=composite_alarm_name,
+            AlarmDescription=composite_alarm_description,
+            AlarmRule=composite_alarm_rule,
+            OKActions=[topic_arn_ok],
+            AlarmActions=[topic_arn_alarm],
+        )
+        cleanups.append(
+            lambda: aws_client.cloudwatch.delete_alarms(AlarmNames=[composite_alarm_name])
+        )
+        snapshot.match("put-composite-alarm", put_composite_alarm_response)
+
+        composite_alarms_list = aws_client.cloudwatch.describe_alarms(
+            AlarmNames=[composite_alarm_name], AlarmTypes=["CompositeAlarm"]
+        )
+        composite_alarm = composite_alarms_list["CompositeAlarms"][0]
+        # TODO snapshot.match("describe-composite-alarm", composite_alarm) instead of asserts
+        # right now the lack of parity for initial composite alarm evaluation prevents from checking snapshot.
+        # Namely, for initial evaluation after alarm creation all child alarms
+        # should be included as triggering alarms
+        assert composite_alarm["AlarmName"] == composite_alarm_name
+        assert composite_alarm["AlarmRule"] == composite_alarm_rule
+
+        # add necessary transformers for the snapshot
+
+        # StateReason is a text with formatted dates inside it. For now stubbing it out fully because
+        # composite alarm reason can be checked via StateReasonData property which is simpler to check
+        # as its properties reference ARN and state of individual alarms without putting them all into a piece of text.
+        snapshot.add_transformer(snapshot.transform.key_value("StateReason"))
+        snapshot.add_transformer(
+            snapshot.transform.regex(composite_alarm_name, "<composite-alarm-name>")
+        )
+        snapshot.add_transformer(snapshot.transform.regex(alarm_1_name, "<simple-alarm-1-name>"))
+        snapshot.add_transformer(snapshot.transform.regex(alarm_2_name, "<simple-alarm-2-name>"))
+        snapshot.add_transformer(snapshot.transform.regex(topic_name_alarm, "<alarm-topic-name>"))
+        snapshot.add_transformer(snapshot.transform.regex(topic_name_ok, "<ok-topic-name>"))
+
+        # helper methods to verify that correct message landed in correct SQS queue
+        # for ALARM and OK state changes respectively
+
+        def _check_composite_alarm_alarm_message(
+            expected_triggering_child_arn,
+            expected_triggering_child_state,
+        ):
+            retry(
+                check_composite_alarm_message,
+                retries=PUBLICATION_RETRIES,
+                sleep_before=1,
+                sqs_client=aws_client.sqs,
+                queue_url=queue_url_alarm,
+                expected_topic_arn=topic_arn_alarm,
+                alarm_name=composite_alarm_name,
+                alarm_description=composite_alarm_description,
+                expected_state="ALARM",
+                expected_triggering_child_arn=expected_triggering_child_arn,
+                expected_triggering_child_state=expected_triggering_child_state,
+            )
+
+        def _check_composite_alarm_ok_message(
+            expected_triggering_child_arn,
+            expected_triggering_child_state,
+        ):
+            retry(
+                check_composite_alarm_message,
+                retries=PUBLICATION_RETRIES,
+                sleep_before=1,
+                sqs_client=aws_client.sqs,
+                queue_url=queue_url_ok,
+                expected_topic_arn=topic_arn_ok,
+                alarm_name=composite_alarm_name,
+                alarm_description=composite_alarm_description,
+                expected_state="OK",
+                expected_triggering_child_arn=expected_triggering_child_arn,
+                expected_triggering_child_state=expected_triggering_child_state,
+            )
+
+        # trigger alarm 1 - composite one should also go into ALARM state
+        aws_client.cloudwatch.set_alarm_state(
+            AlarmName=alarm_1_name, StateValue="ALARM", StateReason="trigger alarm 1"
+        )
+
+        _check_composite_alarm_alarm_message(
+            expected_triggering_child_arn=alarm_1_arn,
+            expected_triggering_child_state="ALARM",
+        )
+
+        composite_alarms_list = aws_client.cloudwatch.describe_alarms(
+            AlarmNames=[composite_alarm_name], AlarmTypes=["CompositeAlarm"]
+        )
+        composite_alarm_in_alarm_when_alarm_1_in_alarm = composite_alarms_list["CompositeAlarms"][0]
+        snapshot.match(
+            "composite-alarm-in-alarm-when-alarm-1-is-in-alarm",
+            composite_alarm_in_alarm_when_alarm_1_in_alarm,
+        )
+
+        # trigger OK for alarm 1 - composite one should also go back to OK
+        aws_client.cloudwatch.set_alarm_state(
+            AlarmName=alarm_1_name, StateValue="OK", StateReason="resetting alarm 1"
+        )
+
+        _check_composite_alarm_ok_message(
+            expected_triggering_child_arn=alarm_1_arn,
+            expected_triggering_child_state="OK",
+        )
+
+        composite_alarms_list = aws_client.cloudwatch.describe_alarms(
+            AlarmNames=[composite_alarm_name], AlarmTypes=["CompositeAlarm"]
+        )
+        composite_alarm_in_ok_when_alarm_1_back_to_ok = composite_alarms_list["CompositeAlarms"][0]
+        snapshot.match(
+            "composite-alarm-in-ok-when-alarm-1-is-back-to-ok",
+            composite_alarm_in_ok_when_alarm_1_back_to_ok,
+        )
+
+        # trigger alarm 2 - composite one should go again into ALARM state
+        aws_client.cloudwatch.set_alarm_state(
+            AlarmName=alarm_2_name, StateValue="ALARM", StateReason="trigger alarm 2"
+        )
+
+        _check_composite_alarm_alarm_message(
+            expected_triggering_child_arn=alarm_2_arn,
+            expected_triggering_child_state="ALARM",
+        )
+
+        composite_alarms_list = aws_client.cloudwatch.describe_alarms(
+            AlarmNames=[composite_alarm_name], AlarmTypes=["CompositeAlarm"]
+        )
+        composite_alarm_in_alarm_when_alarm_2_in_alarm = composite_alarms_list["CompositeAlarms"][0]
+        snapshot.match(
+            "composite-alarm-in-alarm-when-alarm-2-is-in-alarm",
+            composite_alarm_in_alarm_when_alarm_2_in_alarm,
+        )
+
+        # trigger OK for alarm 2 - composite one should also go back to OK
+        aws_client.cloudwatch.set_alarm_state(
+            AlarmName=alarm_2_name, StateValue="OK", StateReason="resetting alarm 2"
+        )
+
+        _check_composite_alarm_ok_message(
+            expected_triggering_child_arn=alarm_2_arn,
+            expected_triggering_child_state="OK",
+        )
+
+        composite_alarms_list = aws_client.cloudwatch.describe_alarms(
+            AlarmNames=[composite_alarm_name], AlarmTypes=["CompositeAlarm"]
+        )
+        composite_alarm_in_ok_when_alarm_2_back_to_ok = composite_alarms_list["CompositeAlarms"][0]
+        snapshot.match(
+            "composite-alarm-in-ok-when-alarm-2-is-back-to-ok",
+            composite_alarm_in_ok_when_alarm_2_back_to_ok,
+        )
+
+        # trigger alarm 2 while alarm 1 is triggered - composite one shouldn't change
+        aws_client.cloudwatch.set_alarm_state(
+            AlarmName=alarm_1_name, StateValue="ALARM", StateReason="trigger alarm 1"
+        )
+        aws_client.cloudwatch.set_alarm_state(
+            AlarmName=alarm_2_name, StateValue="ALARM", StateReason="trigger alarm 2"
+        )
+
+        composite_alarms_list = aws_client.cloudwatch.describe_alarms(
+            AlarmNames=[composite_alarm_name], AlarmTypes=["CompositeAlarm"]
+        )
+        composite_alarm_is_triggered_by_alarm_1_and_then_not_changed_by_alarm_2 = (
+            composite_alarms_list["CompositeAlarms"][0]
+        )
+        snapshot.match(
+            "composite-alarm-is-triggered-by-alarm-1-and-then-unchanged-by-alarm-2",
+            composite_alarm_is_triggered_by_alarm_1_and_then_not_changed_by_alarm_2,
+        )
+
+    @markers.aws.validated
     @markers.snapshot.skip_snapshot_verify(
         paths=[
             "$..AlarmHistoryItems..HistoryData.newState.stateReason",
@@ -1071,7 +1327,8 @@ class TestCloudwatch:
             AlarmActions=[topic_arn_alarm],
             EvaluationPeriods=1,
             ComparisonOperator="GreaterThanThreshold",
-            TreatMissingData="ignore",  # notBreaching had some downsides, as depending on the alarm evaluation interval it would first go into OK
+            TreatMissingData="ignore",
+            # notBreaching had some downsides, as depending on the alarm evaluation interval it would first go into OK
         )
         cleanups.append(lambda: aws_client.cloudwatch.delete_alarms(AlarmNames=[alarm_name]))
         response = aws_client.cloudwatch.describe_alarms(AlarmNames=[alarm_name])
@@ -1391,10 +1648,47 @@ class TestCloudwatch:
         snapshot.match("get_metric_data_2", response)
 
     @markers.aws.validated
+    @pytest.mark.skipif(condition=is_old_provider(), reason="Old provider is not raising exception")
+    def test_invalid_dashboard_name(self, aws_client, region_name, snapshot):
+        dashboard_name = f"test-{short_uid()}:invalid"
+        dashboard_body = {
+            "widgets": [
+                {
+                    "type": "metric",
+                    "x": 0,
+                    "y": 0,
+                    "width": 6,
+                    "height": 6,
+                    "properties": {
+                        "metrics": [["AWS/EC2", "CPUUtilization", "InstanceId", "i-12345678"]],
+                        "region": region_name,
+                        "view": "timeSeries",
+                        "stacked": False,
+                    },
+                }
+            ]
+        }
+
+        with pytest.raises(Exception) as ex:
+            aws_client.cloudwatch.put_dashboard(
+                DashboardName=dashboard_name, DashboardBody=json.dumps(dashboard_body)
+            )
+
+        snapshot.match("error-invalid-dashboardname", ex.value.response)
+
+    @markers.aws.validated
     @markers.snapshot.skip_snapshot_verify(
-        paths=["$..DashboardArn"], condition=is_old_provider
-    )  # ARN has a typo in moto
-    def test_dashboard_lifecycle(self, aws_client, snapshot):
+        condition=is_old_provider,
+        paths=[
+            "$..DashboardArn",  # ARN has a typo in moto
+        ],
+    )
+    @markers.snapshot.skip_snapshot_verify(
+        paths=[
+            "$..DashboardEntries..Size",  # need to be skipped because size changes if the region name length is longer
+        ]
+    )
+    def test_dashboard_lifecycle(self, aws_client, region_name, snapshot):
         dashboard_name = f"test-{short_uid()}"
         dashboard_body = {
             "widgets": [
@@ -1406,7 +1700,7 @@ class TestCloudwatch:
                     "height": 6,
                     "properties": {
                         "metrics": [["AWS/EC2", "CPUUtilization", "InstanceId", "i-12345678"]],
-                        "region": TEST_AWS_REGION_NAME,
+                        "region": region_name,
                         "view": "timeSeries",
                         "stacked": False,
                     },
@@ -2188,6 +2482,7 @@ class TestCloudwatch:
                 {"MetricName": "metric1", "Value": val, "Unit": "Seconds"} for val in values
             ],
         )
+
         # get_metric_data
 
         def _get_metric_data():
@@ -2221,6 +2516,12 @@ class TestCloudwatch:
 
     @markers.aws.validated
     def test_get_metric_with_null_dimensions(self, aws_client, snapshot):
+        """
+        This test validates the behaviour when there is metric data with dimensions and the get_metric_data call
+        has no dimensions specified. The expected behaviour is that the call should return the metric data with
+        no dimensions, which in this test, there is no such data, so the total sum should equal 0. And since the
+        Sum equals 0, the response will have no values.
+        """
         snapshot.add_transformer(snapshot.transform.key_value("Id"))
         snapshot.add_transformer(snapshot.transform.key_value("Label"))
         namespace = f"n-{short_uid()}"
@@ -2261,9 +2562,10 @@ class TestCloudwatch:
                 StartTime=datetime.utcnow() - timedelta(hours=1),
                 EndTime=datetime.utcnow(),
             )
+            assert len(response["MetricDataResults"][0]["Values"]) == 0
             snapshot.match("get_metric_with_null_dimensions", response)
 
-        retry(assert_results, retries=10, sleep=1.0, sleep_before=2.0 if is_aws_cloud() else 0.0)
+        retry(assert_results, retries=10, sleep=1.0, sleep_before=2 if is_aws_cloud() else 0.0)
 
     @markers.aws.validated
     def test_alarm_lambda_target(
@@ -2327,8 +2629,8 @@ class TestCloudwatch:
 
         invocation_res = retry(
             lambda: _get_lambda_logs(aws_client.logs, fn_name=fn_name),
-            retries=200 if is_aws() else 20,
-            sleep=10 if is_aws() else 1,
+            retries=200 if is_aws_cloud() else 20,
+            sleep=10 if is_aws_cloud() else 1,
         )
         snapshot.match("lambda-alarm-invocations", invocation_res)
 
@@ -2424,7 +2726,7 @@ class TestCloudwatch:
                                 "MetricStat": {
                                     "Metric": {
                                         "Namespace": namespace,
-                                        "MetricName": f"metric-{runner-1}-1",
+                                        "MetricName": f"metric-{runner - 1}-1",
                                     },
                                     "Period": 60,
                                     "Stat": "Sum",
@@ -2435,7 +2737,7 @@ class TestCloudwatch:
                                 "MetricStat": {
                                     "Metric": {
                                         "Namespace": namespace,
-                                        "MetricName": f"metric-{runner-1}-2",
+                                        "MetricName": f"metric-{runner - 1}-2",
                                     },
                                     "Period": 60,
                                     "Stat": "Sum",
@@ -2446,7 +2748,7 @@ class TestCloudwatch:
                         EndTime=end_time,
                     )
             except Exception as e:
-                LOG.exception(f"runner {runner} failed: {e}")
+                LOG.exception("runner %s failed: %s", runner, e)
                 exception_caught = True
 
         thread_list = []
@@ -2493,6 +2795,140 @@ class TestCloudwatch:
         describe_alarm = aws_client.cloudwatch.describe_alarms(AlarmNames=[alarm_name])
         snapshot.match("describe-after-delete", describe_alarm)
 
+    @markers.aws.validated
+    @markers.snapshot.skip_snapshot_verify(
+        condition=is_old_provider,
+        paths=[
+            "$..list-metrics..Metrics",
+        ],
+    )
+    def test_multiple_dimensions_statistics(self, aws_client, snapshot):
+        snapshot.add_transformer(snapshot.transform.cloudwatch_api())
+
+        utc_now = datetime.now(tz=timezone.utc)
+        namespace = f"test/{short_uid()}"
+        metric_name = "http.server.requests.count"
+        dimensions = [
+            {"Name": "error", "Value": "none"},
+            {"Name": "exception", "Value": "none"},
+            {"Name": "method", "Value": "GET"},
+            {"Name": "outcome", "Value": "SUCCESS"},
+            {"Name": "uri", "Value": "/greetings"},
+            {"Name": "status", "Value": "200"},
+        ]
+        aws_client.cloudwatch.put_metric_data(
+            Namespace=namespace,
+            MetricData=[
+                {
+                    "MetricName": metric_name,
+                    "Value": 0.0,
+                    "Unit": "Count",
+                    "StorageResolution": 1,
+                    "Dimensions": dimensions,
+                    "Timestamp": datetime.now(tz=timezone.utc),
+                }
+            ],
+        )
+        aws_client.cloudwatch.put_metric_data(
+            Namespace=namespace,
+            MetricData=[
+                {
+                    "MetricName": metric_name,
+                    "Value": 5.0,
+                    "Unit": "Count",
+                    "StorageResolution": 1,
+                    "Dimensions": dimensions,
+                    "Timestamp": datetime.now(tz=timezone.utc),
+                }
+            ],
+        )
+
+        def assert_results():
+            response = aws_client.cloudwatch.get_metric_data(
+                MetricDataQueries=[
+                    {
+                        "Id": "result1",
+                        "MetricStat": {
+                            "Metric": {
+                                "Namespace": namespace,
+                                "MetricName": metric_name,
+                                "Dimensions": dimensions,
+                            },
+                            "Period": 10,
+                            "Stat": "Maximum",
+                            "Unit": "Count",
+                        },
+                    }
+                ],
+                StartTime=utc_now - timedelta(seconds=60),
+                EndTime=utc_now + timedelta(seconds=60),
+            )
+
+            assert len(response["MetricDataResults"][0]["Values"]) > 0
+            snapshot.match("get-metric-stats-max", response)
+
+        retries = 10 if is_aws_cloud() else 1
+        sleep_before = 2 if is_aws_cloud() else 0
+        retry(assert_results, retries=retries, sleep_before=sleep_before)
+
+        def list_metrics():
+            res = aws_client.cloudwatch.list_metrics(
+                Namespace=namespace, MetricName=metric_name, Dimensions=dimensions
+            )
+            assert len(res["Metrics"]) > 0
+            return res
+
+        retries = 10 if is_aws_cloud() else 1
+        sleep_before = 2 if is_aws_cloud() else 0
+        list_metrics_res = retry(list_metrics, retries=retries, sleep_before=sleep_before)
+
+        # Function to sort the dimensions by "Name"
+        def sort_dimensions(data: dict):
+            for metric in data["Metrics"]:
+                metric["Dimensions"] = sorted(metric["Dimensions"], key=lambda x: x["Name"])
+
+        sort_dimensions(list_metrics_res)
+        snapshot.match("list-metrics", list_metrics_res)
+
+    @markers.aws.validated
+    @pytest.mark.skipif(is_old_provider(), reason="New test for v2 provider")
+    def test_invalid_amount_of_datapoints(self, aws_client, snapshot):
+        snapshot.add_transformer(snapshot.transform.cloudwatch_api())
+        utc_now = datetime.now(tz=timezone.utc)
+        with pytest.raises(ClientError) as ex:
+            aws_client.cloudwatch.get_metric_statistics(
+                Namespace="namespace",
+                MetricName="metric_name",
+                StartTime=utc_now,
+                EndTime=utc_now + timedelta(days=1),
+                Period=1,
+                Statistics=["SampleCount"],
+            )
+
+        snapshot.match("error-invalid-amount-datapoints", ex.value.response)
+        with pytest.raises(ClientError) as ex:
+            aws_client.cloudwatch.get_metric_statistics(
+                Namespace="namespace",
+                MetricName="metric_name",
+                StartTime=utc_now,
+                EndTime=utc_now,
+                Period=1,
+                Statistics=["SampleCount"],
+            )
+
+        snapshot.match("error-invalid-time-frame", ex.value.response)
+
+        response = aws_client.cloudwatch.get_metric_statistics(
+            Namespace=f"namespace_{short_uid()}",
+            MetricName="metric_name",
+            StartTime=utc_now,
+            EndTime=utc_now + timedelta(days=1),
+            Period=60,
+            Statistics=["SampleCount"],
+        )
+
+        snapshot.match("get-metric-statitics", response)
+
 
 def _get_lambda_logs(logs_client: "CloudWatchLogsClient", fn_name: str):
     log_events = logs_client.filter_log_events(logGroupName=f"/aws/lambda/{fn_name}")["events"]
@@ -2526,11 +2962,39 @@ def _sqs_messages_snapshot(expected_state, sqs_client, sqs_queue, snapshot, iden
             found_msg = message
             receipt_handle = msg["ReceiptHandle"]
             break
-    assert (
-        found_msg
-    ), f"no message found for {expected_state}. Got {len(result['Messages'])} messages.\n{json.dumps(result)}"
+    assert found_msg, (
+        f"no message found for {expected_state}. Got {len(result['Messages'])} messages.\n{json.dumps(result)}"
+    )
     sqs_client.delete_message(QueueUrl=sqs_queue, ReceiptHandle=receipt_handle)
     snapshot.match(f"{identifier}-sqs-msg", found_msg)
+
+
+def check_composite_alarm_message(
+    sqs_client,
+    queue_url,
+    expected_topic_arn,
+    alarm_name,
+    alarm_description,
+    expected_state,
+    expected_triggering_child_arn,
+    expected_triggering_child_state,
+):
+    receive_result = sqs_client.receive_message(QueueUrl=queue_url)
+    message = None
+    for msg in receive_result["Messages"]:
+        body = json.loads(msg["Body"])
+        if body["TopicArn"] == expected_topic_arn:
+            message = json.loads(body["Message"])
+            receipt_handle = msg["ReceiptHandle"]
+            sqs_client.delete_message(QueueUrl=queue_url, ReceiptHandle=receipt_handle)
+            break
+    assert message["NewStateValue"] == expected_state
+    assert message["AlarmName"] == alarm_name
+    assert message["AlarmDescription"] == alarm_description
+    triggering_child_alarm = message["TriggeringChildren"][0]
+    assert triggering_child_alarm["Arn"] == expected_triggering_child_arn
+    assert triggering_child_alarm["State"]["Value"] == expected_triggering_child_state
+    return message
 
 
 def check_message(

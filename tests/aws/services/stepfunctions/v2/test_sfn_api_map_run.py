@@ -1,21 +1,26 @@
 import json
+from itertools import chain
+
+import pytest
+from localstack_snapshot.snapshots.transformer import JsonpathTransformer, RegexTransformer
 
 from localstack.testing.pytest import markers
-from localstack.testing.snapshots.transformer import JsonpathTransformer, RegexTransformer
+from localstack.testing.pytest.stepfunctions.utils import (
+    await_execution_terminated,
+    create_state_machine_with_iam_role,
+)
 from tests.aws.services.stepfunctions.templates.scenarios.scenarios_templates import (
     ScenariosTemplate as ST,
 )
-from tests.aws.services.stepfunctions.utils import await_execution_terminated, create
 
 
-@markers.snapshot.skip_snapshot_verify(paths=["$..loggingConfiguration", "$..tracingConfiguration"])
 class TestSnfApiMapRun:
     @markers.aws.validated
     def test_list_map_runs_and_describe_map_run(
         self,
         aws_client,
         s3_create_bucket,
-        create_iam_role_for_sfn,
+        create_state_machine_iam_role,
         create_state_machine,
         sfn_snapshot,
     ):
@@ -42,8 +47,12 @@ class TestSnfApiMapRun:
 
         exec_input = json.dumps({"Bucket": bucket_name, "Key": key})
 
-        state_machine_arn = create(
-            create_iam_role_for_sfn, create_state_machine, sfn_snapshot, definition
+        state_machine_arn = create_state_machine_with_iam_role(
+            aws_client,
+            create_state_machine_iam_role,
+            create_state_machine,
+            sfn_snapshot,
+            definition,
         )
 
         exec_resp = aws_client.stepfunctions.start_execution(
@@ -68,3 +77,65 @@ class TestSnfApiMapRun:
         map_run_arn = list_map_runs["mapRuns"][0]["mapRunArn"]
         describe_map_run = aws_client.stepfunctions.describe_map_run(mapRunArn=map_run_arn)
         sfn_snapshot.match("describe_map_run", describe_map_run)
+
+    @markers.aws.validated
+    @pytest.mark.parametrize(
+        "invalid_char",
+        list(' ?*<>{}[]:;,\\|^~$#%&`"')
+        + [chr(i) for i in chain(range(0x00, 0x20), range(0x7F, 0xA0))],
+    )
+    def test_map_state_label_invalid_char_fail(
+        self,
+        aws_client,
+        create_state_machine_iam_role,
+        create_state_machine,
+        sfn_snapshot,
+        invalid_char,
+    ):
+        template = ST.load_sfn_template(ST.MAP_STATE_LABEL_INVALID_CHAR_FAIL)
+        template["States"]["MapState"]["Label"] = f"label_{invalid_char}"
+        definition = json.dumps(template)
+
+        with pytest.raises(Exception) as err:
+            create_state_machine_with_iam_role(
+                aws_client,
+                create_state_machine_iam_role,
+                create_state_machine,
+                sfn_snapshot,
+                definition,
+            )
+        sfn_snapshot.match("map_state_label_invalid_char_fail", err.value.response)
+
+    @markers.aws.validated
+    def test_map_state_label_empty_fail(
+        self, aws_client, create_state_machine_iam_role, create_state_machine, sfn_snapshot
+    ):
+        template = ST.load_sfn_template(ST.MAP_STATE_LABEL_EMPTY_FAIL)
+        definition = json.dumps(template)
+
+        with pytest.raises(Exception) as err:
+            create_state_machine_with_iam_role(
+                aws_client,
+                create_state_machine_iam_role,
+                create_state_machine,
+                sfn_snapshot,
+                definition,
+            )
+        sfn_snapshot.match("map_state_label_empty_fail", err.value.response)
+
+    @markers.aws.validated
+    def test_map_state_label_too_long_fail(
+        self, aws_client, create_state_machine_iam_role, create_state_machine, sfn_snapshot
+    ):
+        template = ST.load_sfn_template(ST.MAP_STATE_LABEL_TOO_LONG_FAIL)
+        definition = json.dumps(template)
+
+        with pytest.raises(Exception) as err:
+            create_state_machine_with_iam_role(
+                aws_client,
+                create_state_machine_iam_role,
+                create_state_machine,
+                sfn_snapshot,
+                definition,
+            )
+        sfn_snapshot.match("map_state_label_too_long_fail", err.value.response)

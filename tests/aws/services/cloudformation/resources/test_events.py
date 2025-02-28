@@ -2,13 +2,40 @@ import json
 import logging
 import os
 
-from localstack.constants import TEST_AWS_ACCOUNT_ID
 from localstack.testing.pytest import markers
-from localstack.utils.aws import arns
 from localstack.utils.strings import short_uid
 from localstack.utils.sync import wait_until
 
 LOG = logging.getLogger(__name__)
+
+
+@markers.aws.validated
+def test_cfn_event_api_destination_resource(deploy_cfn_template, region_name, aws_client):
+    def _assert(expected_len):
+        rs = aws_client.events.list_event_buses()
+        event_buses = [eb for eb in rs["EventBuses"] if eb["Name"] == "my-test-bus"]
+        assert len(event_buses) == expected_len
+        rs = aws_client.events.list_connections()
+        connections = [con for con in rs["Connections"] if con["Name"] == "my-test-conn"]
+        assert len(connections) == expected_len
+        rs = aws_client.events.list_api_destinations()
+        api_destinations = [
+            ad for ad in rs["ApiDestinations"] if ad["Name"] == "my-test-destination"
+        ]
+        assert len(api_destinations) == expected_len
+
+    stack = deploy_cfn_template(
+        template_path=os.path.join(
+            os.path.dirname(__file__), "../../../templates/events_apidestination.yml"
+        ),
+        parameters={
+            "Region": region_name,
+        },
+    )
+    _assert(1)
+
+    stack.destroy()
+    _assert(0)
 
 
 @markers.aws.validated
@@ -127,10 +154,11 @@ def test_event_rule_to_logs(deploy_cfn_template, aws_client):
     assert message_token in log_events["events"][0]["message"]
 
 
-# {"LogicalResourceId": "TestRule99A50909", "ResourceType": "AWS::Events::Rule", "ResourceStatus": "CREATE_FAILED", "ResourceStatusReason": "Parameter ScheduleExpression is not valid."}
-@markers.aws.needs_fixing
-def test_event_rule_creation_without_target(deploy_cfn_template, aws_client):
+@markers.aws.validated
+def test_event_rule_creation_without_target(deploy_cfn_template, aws_client, snapshot):
     event_rule_name = f"event-rule-{short_uid()}"
+    snapshot.add_transformer(snapshot.transform.regex(event_rule_name, "event-rule-name"))
+
     deploy_cfn_template(
         template_path=os.path.join(
             os.path.dirname(__file__), "../../../templates/events_rule_without_targets.yaml"
@@ -141,7 +169,7 @@ def test_event_rule_creation_without_target(deploy_cfn_template, aws_client):
     response = aws_client.events.describe_rule(
         Name=event_rule_name,
     )
-    assert response
+    snapshot.match("describe_rule", response)
 
 
 @markers.aws.validated
@@ -161,56 +189,6 @@ def test_cfn_event_bus_resource(deploy_cfn_template, aws_client):
 
     stack.destroy()
     _assert(0)
-
-
-TEST_TEMPLATE_16 = """
-AWSTemplateFormatVersion: 2010-09-09
-Resources:
-  MyBucket:
-    Type: 'AWS::S3::Bucket'
-    Properties:
-      BucketName: %s
-  ScheduledRule:
-    Type: 'AWS::Events::Rule'
-    Properties:
-      Name: %s
-      ScheduleExpression: rate(10 minutes)
-      State: ENABLED
-      Targets:
-        - Id: TargetBucketV1
-          Arn: !GetAtt "MyBucket.Arn"
-"""
-
-TEST_TEMPLATE_18 = """
-AWSTemplateFormatVersion: 2010-09-09
-Resources:
-  TestStateMachine:
-    Type: "AWS::StepFunctions::StateMachine"
-    Properties:
-      RoleArn: %s
-      DefinitionString:
-        !Sub
-        - |-
-          {
-            "StartAt": "state1",
-            "States": {
-              "state1": {
-                "Type": "Pass",
-                "Result": "Hello World",
-                "End": true
-              }
-            }
-          }
-        - {}
-  ScheduledRule:
-    Type: AWS::Events::Rule
-    Properties:
-      ScheduleExpression: "cron(0/1 * * * ? *)"
-      State: ENABLED
-      Targets:
-        - Id: TestStateMachine
-          Arn: !Ref TestStateMachine
-"""
 
 
 @markers.aws.validated
@@ -236,48 +214,18 @@ def test_rule_properties(deploy_cfn_template, aws_client, snapshot):
     snapshot.match("outputs", stack.outputs)
 
 
-# {"LogicalResourceId": "ScheduledRule", "ResourceType": "AWS::Events::Rule", "ResourceStatus": "CREATE_FAILED", "ResourceStatusReason": "s3 is not a supported service for a target."}
-@markers.aws.needs_fixing
-def test_cfn_handle_events_rule(deploy_cfn_template, aws_client):
-    bucket_name = f"target-{short_uid()}"
-    rule_prefix = f"s3-rule-{short_uid()}"
-    rule_name = f"{rule_prefix}-{short_uid()}"
-
+@markers.aws.validated
+def test_rule_pattern_transformation(aws_client, deploy_cfn_template, snapshot):
+    """
+    The CFn provider for a rule applies a transformation to some properties. Extend this test as more properties or
+    situations arise.
+    """
     stack = deploy_cfn_template(
-        template=TEST_TEMPLATE_16 % (bucket_name, rule_name),
+        template_path=os.path.join(
+            os.path.dirname(__file__), "../../../templates/events_rule_pattern.yml"
+        ),
     )
 
-    rs = aws_client.events.list_rules(NamePrefix=rule_prefix)
-    assert rule_name in [rule["Name"] for rule in rs["Rules"]]
-
-    target_arn = arns.s3_bucket_arn(bucket_name)  # TODO: !
-    rs = aws_client.events.list_targets_by_rule(Rule=rule_name)
-    assert target_arn in [target["Arn"] for target in rs["Targets"]]
-
-    # clean up
-    stack.destroy()
-    rs = aws_client.events.list_rules(NamePrefix=rule_prefix)
-    assert rule_name not in [rule["Name"] for rule in rs["Rules"]]
-
-
-# {"LogicalResourceId": "TestStateMachine", "ResourceType": "AWS::StepFunctions::StateMachine", "ResourceStatus": "CREATE_FAILED", "ResourceStatusReason": "Resource handler returned message: \"Cross-account pass role is not allowed."}
-@markers.aws.needs_fixing
-def test_cfn_handle_events_rule_without_name(deploy_cfn_template, aws_client):
-    rs = aws_client.events.list_rules()
-    rule_names = [rule["Name"] for rule in rs["Rules"]]
-
-    stack = deploy_cfn_template(
-        template=TEST_TEMPLATE_18 % arns.iam_role_arn("sfn_role", account_id=TEST_AWS_ACCOUNT_ID),
-    )
-
-    rs = aws_client.events.list_rules()
-    new_rules = [rule for rule in rs["Rules"] if rule["Name"] not in rule_names]
-    assert len(new_rules) == 1
-    rule = new_rules[0]
-
-    assert rule["ScheduleExpression"] == "cron(0/1 * * * ? *)"
-
-    stack.destroy()
-
-    rs = aws_client.events.list_rules()
-    assert rule["Name"] not in [r["Name"] for r in rs["Rules"]]
+    rule = aws_client.events.describe_rule(Name=stack.outputs["RuleName"])
+    snapshot.match("rule", rule)
+    snapshot.add_transformer(snapshot.transform.key_value("Name"))

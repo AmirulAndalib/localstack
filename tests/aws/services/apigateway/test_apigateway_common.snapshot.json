@@ -3,7 +3,7 @@
     "recorded-date": "10-01-2024, 00:06:10",
     "recorded-content": {
       "register-lambda": {
-        "fn_arn": "arn:aws:lambda:<region>:111111111111:function:<fn_name:1>",
+        "fn_arn": "arn:<partition>:lambda:<region>:111111111111:function:<fn_name:1>",
         "fn_name": "<fn_name:1>"
       },
       "deploy-1": {
@@ -30,7 +30,7 @@
           "passthroughBehavior": "WHEN_NO_MATCH",
           "timeoutInMillis": 29000,
           "type": "AWS_PROXY",
-          "uri": "arn:aws:apigateway:<region>:lambda:path/2015-03-31/functions/arn:aws:lambda:<region>:111111111111:function:<fn_name:1>/invocations"
+          "uri": "arn:<partition>:apigateway:<region>:lambda:path/2015-03-31/functions/arn:<partition>:lambda:<region>:111111111111:function:<fn_name:1>/invocations"
         },
         "methodResponses": {
           "200": {
@@ -76,7 +76,7 @@
           "passthroughBehavior": "WHEN_NO_MATCH",
           "timeoutInMillis": 29000,
           "type": "AWS_PROXY",
-          "uri": "arn:aws:apigateway:<region>:lambda:path/2015-03-31/functions/arn:aws:lambda:<region>:111111111111:function:<fn_name:1>/invocations"
+          "uri": "arn:<partition>:apigateway:<region>:lambda:path/2015-03-31/functions/arn:<partition>:lambda:<region>:111111111111:function:<fn_name:1>/invocations"
         },
         "methodResponses": {
           "200": {
@@ -181,7 +181,7 @@
     }
   },
   "tests/aws/services/apigateway/test_apigateway_common.py::TestUsagePlans::test_usage_plan_crud": {
-    "recorded-date": "28-07-2023, 08:30:23",
+    "recorded-date": "20-03-2024, 22:49:50",
     "recorded-content": {
       "create-usage-plan": {
         "apiStages": [
@@ -243,6 +243,11 @@
         "description": "<description:1>",
         "id": "<id:1>",
         "name": "<name:1>",
+        "quota": {
+          "limit": 5000,
+          "offset": 0,
+          "period": "MONTH"
+        },
         "tags": {},
         "throttle": {
           "burstLimit": 100,
@@ -252,11 +257,119 @@
           "HTTPHeaders": {},
           "HTTPStatusCode": 200
         }
+      },
+      "update-wrong-id": {
+        "Error": {
+          "Code": "NotFoundException",
+          "Message": "Invalid Usage Plan ID specified"
+        },
+        "message": "Invalid Usage Plan ID specified",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 404
+        }
+      },
+      "update-wrong-api-stages-no-value": {
+        "Error": {
+          "Code": "BadRequestException",
+          "Message": "Invalid API Stage specified"
+        },
+        "message": "Invalid API Stage specified",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 400
+        }
+      },
+      "update-wrong-api-stages-wrong-api": {
+        "Error": {
+          "Code": "NotFoundException",
+          "Message": "Invalid API Stage {api: <api-id:1>b, stage: dev} specified for usageplan <id:1>"
+        },
+        "message": "Invalid API Stage {api: <api-id:1>b, stage: dev} specified for usageplan <id:1>",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 404
+        }
+      },
+      "update-wrong-api-stages-wrong-stage": {
+        "Error": {
+          "Code": "NotFoundException",
+          "Message": "Invalid API Stage {api: <api-id:1>, stage: fakestagename} specified for usageplan <id:1>"
+        },
+        "message": "Invalid API Stage {api: <api-id:1>, stage: fakestagename} specified for usageplan <id:1>",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 404
+        }
+      },
+      "update-wrong-api-stages-wrong-value": {
+        "Error": {
+          "Code": "BadRequestException",
+          "Message": "Invalid API Stage specified"
+        },
+        "message": "Invalid API Stage specified",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 400
+        }
+      },
+      "get-usage-plan-after-update": {
+        "apiStages": [
+          {
+            "apiId": "<api-id:1>",
+            "stage": "dev"
+          }
+        ],
+        "description": "<description:1>",
+        "id": "<id:1>",
+        "name": "<name:1>",
+        "quota": {
+          "limit": 5000,
+          "offset": 0,
+          "period": "MONTH"
+        },
+        "tags": {},
+        "throttle": {
+          "burstLimit": 100,
+          "rateLimit": 200.0
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "get-usage-plans-after-update": {
+        "items": [
+          {
+            "apiStages": [
+              {
+                "apiId": "<api-id:1>",
+                "stage": "dev"
+              }
+            ],
+            "description": "<description:1>",
+            "id": "<id:1>",
+            "name": "<name:1>",
+            "quota": {
+              "limit": 5000,
+              "offset": 0,
+              "period": "MONTH"
+            },
+            "throttle": {
+              "burstLimit": 100,
+              "rateLimit": 200.0
+            }
+          }
+        ],
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
       }
     }
   },
   "tests/aws/services/apigateway/test_apigateway_common.py::TestStages::test_create_update_stages": {
-    "recorded-date": "11-10-2023, 17:39:23",
+    "recorded-date": "05-03-2024, 18:54:23",
     "recorded-content": {
       "create-stage": {
         "cacheClusterEnabled": false,
@@ -383,49 +496,6 @@
         }
       },
       "update-stage-override": {
-        "cacheClusterEnabled": false,
-        "cacheClusterStatus": "NOT_AVAILABLE",
-        "createdDate": "datetime",
-        "deploymentId": "<deployment-id:1>",
-        "description": "stage new",
-        "documentationVersion": "v123",
-        "lastUpdatedDate": "datetime",
-        "methodSettings": {
-          "*/*": {
-            "cacheDataEncrypted": false,
-            "cacheTtlInSeconds": 300,
-            "cachingEnabled": true,
-            "dataTraceEnabled": false,
-            "metricsEnabled": false,
-            "requireAuthorizationForCacheControl": true,
-            "throttlingBurstLimit": 100,
-            "throttlingRateLimit": 10000.0,
-            "unauthorizedCacheControlHeaderStrategy": "SUCCEED_WITH_RESPONSE_HEADER"
-          },
-          "test/GET": {
-            "cacheDataEncrypted": false,
-            "cacheTtlInSeconds": 300,
-            "cachingEnabled": true,
-            "dataTraceEnabled": false,
-            "metricsEnabled": false,
-            "requireAuthorizationForCacheControl": true,
-            "throttlingBurstLimit": 124,
-            "throttlingRateLimit": 10000.0,
-            "unauthorizedCacheControlHeaderStrategy": "SUCCEED_WITH_RESPONSE_HEADER"
-          }
-        },
-        "stageName": "s1",
-        "tracingEnabled": true,
-        "variables": {
-          "var1": "test",
-          "var2": "test2"
-        },
-        "ResponseMetadata": {
-          "HTTPHeaders": {},
-          "HTTPStatusCode": 200
-        }
-      },
-      "get-stage-override": {
         "cacheClusterEnabled": false,
         "cacheClusterStatus": "NOT_AVAILABLE",
         "createdDate": "datetime",
@@ -929,6 +999,381 @@
           "HTTPHeaders": {},
           "HTTPStatusCode": 400
         }
+      }
+    }
+  },
+  "tests/aws/services/apigateway/test_apigateway_common.py::TestStages::test_update_stage_remove_wildcard": {
+    "recorded-date": "05-03-2024, 21:10:56",
+    "recorded-content": {
+      "create-stage": {
+        "cacheClusterEnabled": false,
+        "cacheClusterStatus": "NOT_AVAILABLE",
+        "createdDate": "datetime",
+        "deploymentId": "<deployment-id:1>",
+        "description": "my stage",
+        "documentationVersion": "v123",
+        "lastUpdatedDate": "datetime",
+        "methodSettings": {},
+        "stageName": "s1",
+        "tracingEnabled": false,
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 201
+        }
+      },
+      "get-stage": {
+        "cacheClusterEnabled": false,
+        "cacheClusterStatus": "NOT_AVAILABLE",
+        "createdDate": "datetime",
+        "deploymentId": "<deployment-id:1>",
+        "description": "my stage",
+        "documentationVersion": "v123",
+        "lastUpdatedDate": "datetime",
+        "methodSettings": {},
+        "stageName": "s1",
+        "tracingEnabled": false,
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "delete-error": {
+        "Error": {
+          "Code": "BadRequestException",
+          "Message": "Cannot remove method setting */* because there is no method setting for this method "
+        },
+        "message": "Cannot remove method setting */* because there is no method setting for this method ",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 400
+        }
+      },
+      "update-stage": {
+        "cacheClusterEnabled": false,
+        "cacheClusterStatus": "NOT_AVAILABLE",
+        "createdDate": "datetime",
+        "deploymentId": "<deployment-id:1>",
+        "description": "my stage",
+        "documentationVersion": "v123",
+        "lastUpdatedDate": "datetime",
+        "methodSettings": {
+          "*/*": {
+            "cacheDataEncrypted": false,
+            "cacheTtlInSeconds": 300,
+            "cachingEnabled": true,
+            "dataTraceEnabled": false,
+            "metricsEnabled": false,
+            "requireAuthorizationForCacheControl": true,
+            "throttlingBurstLimit": 5000,
+            "throttlingRateLimit": 10000.0,
+            "unauthorizedCacheControlHeaderStrategy": "SUCCEED_WITH_RESPONSE_HEADER"
+          }
+        },
+        "stageName": "s1",
+        "tracingEnabled": false,
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "update-stage-reset": {
+        "cacheClusterEnabled": false,
+        "cacheClusterStatus": "NOT_AVAILABLE",
+        "createdDate": "datetime",
+        "deploymentId": "<deployment-id:1>",
+        "description": "my stage",
+        "documentationVersion": "v123",
+        "lastUpdatedDate": "datetime",
+        "methodSettings": {},
+        "stageName": "s1",
+        "tracingEnabled": false,
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "get-stage-after-reset": {
+        "cacheClusterEnabled": false,
+        "cacheClusterStatus": "NOT_AVAILABLE",
+        "createdDate": "datetime",
+        "deploymentId": "<deployment-id:1>",
+        "description": "my stage",
+        "documentationVersion": "v123",
+        "lastUpdatedDate": "datetime",
+        "methodSettings": {},
+        "stageName": "s1",
+        "tracingEnabled": false,
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      }
+    }
+  },
+  "tests/aws/services/apigateway/test_apigateway_common.py::TestApigatewayRouting::test_routing_not_found": {
+    "recorded-date": "23-07-2024, 17:41:58",
+    "recorded-content": {
+      "working-route": {
+        "message": "exists",
+        "statusCode": 200
+      },
+      "not-found": {
+        "content": {
+          "message": "Missing Authentication Token"
+        },
+        "errorType": "MissingAuthenticationTokenException"
+      },
+      "wrong-method": {
+        "content": {
+          "message": "Missing Authentication Token"
+        },
+        "errorType": "MissingAuthenticationTokenException"
+      }
+    }
+  },
+  "tests/aws/services/apigateway/test_apigateway_common.py::TestApiGatewayCommon::test_invocation_trace_id": {
+    "recorded-date": "07-08-2024, 20:24:17",
+    "recorded-content": {
+      "register-lambda": {
+        "FunctionArn": "arn:<partition>:lambda:<region>:111111111111:function:<function-name:1>",
+        "FunctionName": "<function-name:1>"
+      },
+      "normal-req-headers-MOCK": {
+        "connection": "keep-alive",
+        "content-length": "content-length",
+        "content-type": "application/json",
+        "date": "date",
+        "via": "<via:1>",
+        "x-amz-apigw-id": "<x-amz-apigw-id:1>",
+        "x-amz-cf-id": "<x-amz-cf-id:1>",
+        "x-amz-cf-pop": "<x-amz-cf-pop:1>",
+        "x-amzn-requestid": "<uuid:1>",
+        "x-cache": "Miss from cloudfront"
+      },
+      "trace-id-req-headers-MOCK": {
+        "connection": "keep-alive",
+        "content-length": "content-length",
+        "content-type": "application/json",
+        "date": "date",
+        "via": "<via:2>",
+        "x-amz-apigw-id": "<x-amz-apigw-id:2>",
+        "x-amz-cf-id": "<x-amz-cf-id:2>",
+        "x-amz-cf-pop": "<x-amz-cf-pop:1>",
+        "x-amzn-requestid": "<uuid:2>",
+        "x-cache": "Miss from cloudfront"
+      },
+      "normal-req-headers-AWS_PROXY": {
+        "connection": "keep-alive",
+        "content-length": "content-length",
+        "content-type": "application/json",
+        "date": "date",
+        "via": "<via:3>",
+        "x-amz-apigw-id": "<x-amz-apigw-id:3>",
+        "x-amz-cf-id": "<x-amz-cf-id:3>",
+        "x-amz-cf-pop": "<x-amz-cf-pop:1>",
+        "x-amzn-requestid": "<uuid:3>",
+        "x-amzn-trace-id": "<x-amzn-trace-id:1>",
+        "x-cache": "Miss from cloudfront"
+      },
+      "trace-id-req-headers-AWS_PROXY": {
+        "connection": "keep-alive",
+        "content-length": "content-length",
+        "content-type": "application/json",
+        "date": "date",
+        "via": "<via:4>",
+        "x-amz-apigw-id": "<x-amz-apigw-id:4>",
+        "x-amz-cf-id": "<x-amz-cf-id:4>",
+        "x-amz-cf-pop": "<x-amz-cf-pop:1>",
+        "x-amzn-requestid": "<uuid:4>",
+        "x-amzn-trace-id": "<x-amzn-trace-id:2>",
+        "x-cache": "Miss from cloudfront"
+      },
+      "trace-id-small-req-headers-AWS_PROXY": {
+        "connection": "keep-alive",
+        "content-length": "content-length",
+        "content-type": "application/json",
+        "date": "date",
+        "via": "<via:5>",
+        "x-amz-apigw-id": "<x-amz-apigw-id:5>",
+        "x-amz-cf-id": "<x-amz-cf-id:5>",
+        "x-amz-cf-pop": "<x-amz-cf-pop:1>",
+        "x-amzn-requestid": "<uuid:5>",
+        "x-amzn-trace-id": "<x-amzn-trace-id:3>",
+        "x-cache": "Miss from cloudfront"
+      }
+    }
+  },
+  "tests/aws/services/apigateway/test_apigateway_common.py::TestApiGatewayCommon::test_api_gateway_request_validator_with_ref_models": {
+    "recorded-date": "28-10-2024, 17:37:06",
+    "recorded-content": {
+      "get-models-with-ref": {
+        "items": [
+          {
+            "contentType": "application/json",
+            "description": "This is a default empty schema model",
+            "id": "<id:1>",
+            "name": "Empty",
+            "schema": {
+              "$schema": "http://json-schema.org/draft-04/schema#",
+              "title": "Empty Schema",
+              "type": "object"
+            }
+          },
+          {
+            "contentType": "application/json",
+            "description": "This is a default error schema model",
+            "id": "<id:2>",
+            "name": "Error",
+            "schema": {
+              "$schema": "http://json-schema.org/draft-04/schema#",
+              "title": "Error Schema",
+              "type": "object",
+              "properties": {
+                "message": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          {
+            "contentType": "application/json",
+            "id": "<id:3>",
+            "name": "testSchema",
+            "schema": {
+              "$schema": "http://json-schema.org/draft-04/schema#",
+              "title": "testSchema",
+              "type": "object",
+              "properties": {
+                "a": {
+                  "type": "number"
+                },
+                "b": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "a",
+                "b"
+              ]
+            }
+          },
+          {
+            "contentType": "application/json",
+            "id": "<id:4>",
+            "name": "testSchemaList",
+            "schema": {
+              "type": "array",
+              "items": {
+                "$ref": "https://apigateway.amazonaws.com/restapis/<api-id>/models/testSchema"
+              }
+            }
+          }
+        ],
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "successful": {
+        "data": "ok"
+      },
+      "failed-validation": {
+        "message": "Invalid request body"
+      }
+    }
+  },
+  "tests/aws/services/apigateway/test_apigateway_common.py::TestApiGatewayCommon::test_api_gateway_request_validator_with_ref_one_ofmodels": {
+    "recorded-date": "28-10-2024, 23:12:21",
+    "recorded-content": {
+      "get-models-with-ref": {
+        "items": [
+          {
+            "contentType": "application/json",
+            "description": "This is a default empty schema model",
+            "id": "<id:1>",
+            "name": "Empty",
+            "schema": {
+              "$schema": "http://json-schema.org/draft-04/schema#",
+              "title": "Empty Schema",
+              "type": "object"
+            }
+          },
+          {
+            "contentType": "application/json",
+            "description": "This is a default error schema model",
+            "id": "<id:2>",
+            "name": "Error",
+            "schema": {
+              "$schema": "http://json-schema.org/draft-04/schema#",
+              "title": "Error Schema",
+              "type": "object",
+              "properties": {
+                "message": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          {
+            "contentType": "application/json",
+            "id": "<id:3>",
+            "name": "StatusModel",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "Status": {
+                  "type": "string"
+                },
+                "Order": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "Status",
+                "Order"
+              ]
+            }
+          },
+          {
+            "contentType": "application/json",
+            "id": "<id:4>",
+            "name": "TestModel",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "status": {
+                  "oneOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "$ref": "https://apigateway.amazonaws.com/restapis/<api-id>/models/StatusModel"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "status"
+              ]
+            }
+          }
+        ],
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "successful": {
+        "data": "ok"
+      },
+      "successful-with-data": {
+        "data": "ok"
+      },
+      "failed-validation-no-data": {
+        "message": "Invalid request body"
+      },
+      "failed-validation-bad-data": {
+        "message": "Invalid request body"
       }
     }
   }

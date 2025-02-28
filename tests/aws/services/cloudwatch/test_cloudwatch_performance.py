@@ -80,7 +80,7 @@ class TestCloudWatchPerformance:
                 else:
                     cw_client.list_metrics()
             except Exception as e:
-                LOG.exception(f"runner {runner} failed: {e}")
+                LOG.exception("runner %s failed: %s", runner, e)
                 error_counter.increment()
 
         start_time = datetime.utcnow()
@@ -95,7 +95,7 @@ class TestCloudWatchPerformance:
 
         end_time = datetime.utcnow()
         diff = end_time - start_time
-        LOG.info(f"N={num_threads} took {diff.total_seconds()} seconds")
+        LOG.info("N=%s took %s seconds", num_threads, diff.total_seconds())
 
         assert error_counter.get_value() == 0
         metrics = []
@@ -165,7 +165,7 @@ class TestCloudWatchPerformance:
             nonlocal namespace
             create_barrier.wait()
             try:
-                metric_name = f"metric-{runner%100}"
+                metric_name = f"metric-{runner % 100}"
                 cw_client = aws_client_factory(config=CUSTOM_CLIENT_CONFIG_RETRY).cloudwatch
                 cw_client.put_metric_data(
                     Namespace=namespace,
@@ -181,7 +181,7 @@ class TestCloudWatchPerformance:
                     ],
                 )
             except Exception as e:
-                LOG.exception(f"runner {runner} failed: {e}")
+                LOG.exception("runner %s failed: %s", runner, e)
                 error_counter.increment()
 
         start_time = datetime.utcnow()
@@ -196,7 +196,7 @@ class TestCloudWatchPerformance:
 
         end_time = datetime.utcnow()
         diff = end_time - start_time
-        LOG.info(f"N={num_threads} took {diff.total_seconds()} seconds")
+        LOG.info("N=%s took %s seconds", num_threads, diff.total_seconds())
 
         assert error_counter.get_value() == 0
         metrics = []

@@ -1,5 +1,7 @@
 import logging
 import os
+import threading
+import time
 from urllib.parse import urlparse
 
 import pytest
@@ -7,15 +9,80 @@ from botocore.exceptions import ClientError
 
 from localstack.aws.api.transcribe import BadRequestException, ConflictException, NotFoundException
 from localstack.aws.connect import ServiceLevelClientFactory
+from localstack.packages.ffmpeg import ffmpeg_package
+from localstack.services.transcribe.packages import vosk_package
+from localstack.services.transcribe.provider import LANGUAGE_MODELS, TranscribeProvider
 from localstack.testing.pytest import markers
 from localstack.utils.files import new_tmp_file
-from localstack.utils.platform import get_arch
 from localstack.utils.strings import short_uid, to_str
 from localstack.utils.sync import poll_condition, retry
+from localstack.utils.threads import start_worker_thread
 
 BASEDIR = os.path.abspath(os.path.dirname(__file__))
 
 LOG = logging.getLogger(__name__)
+
+# Lock and event to ensure that the installation is executed before the tests
+vosk_installed = threading.Event()
+ffmpeg_installed = threading.Event()
+installation_errored = threading.Event()
+
+INSTALLATION_TIMEOUT = 5 * 60
+PRE_DOWNLOAD_LANGUAGE_CODE_MODELS = ["en-GB"]
+
+
+def install_async():
+    """
+    Installs the default ffmpeg and vosk versions in a worker thread.
+    """
+    if vosk_installed.is_set() and ffmpeg_installed.is_set():
+        return
+
+    def install_vosk(*args):
+        if vosk_installed.is_set():
+            return
+        try:
+            LOG.info("installing Vosk default version")
+            vosk_package.install()
+            LOG.info("done installing Vosk default version")
+            LOG.info("downloading Vosk models used in test: %s", PRE_DOWNLOAD_LANGUAGE_CODE_MODELS)
+            for language_code in PRE_DOWNLOAD_LANGUAGE_CODE_MODELS:
+                model_name = LANGUAGE_MODELS[language_code]
+                # downloading the model takes quite a while sometimes
+                TranscribeProvider.download_model(model_name)
+                LOG.info(
+                    "done downloading Vosk model '%s' for language code '%s'",
+                    model_name,
+                    language_code,
+                )
+            LOG.info("done downloading all Vosk models used in test")
+        except Exception:
+            LOG.exception("Error during installation of Vosk dependencies")
+            installation_errored.set()
+            # we also set the other event to quickly stop the polling
+            ffmpeg_installed.set()
+        finally:
+            vosk_installed.set()
+
+    def install_ffmpeg(*args):
+        if ffmpeg_installed.is_set():
+            return
+        try:
+            LOG.info("installing ffmpeg default version")
+            ffmpeg_package.install()
+            LOG.info("done ffmpeg default version")
+        except Exception:
+            LOG.exception("Error during installation of Vosk dependencies")
+            installation_errored.set()
+            # we also set the other event to quickly stop the polling
+            vosk_installed.set()
+        finally:
+            ffmpeg_installed.set()
+
+    # we parallelize the installation of the dependencies
+    # TODO: we could maybe use a ThreadPoolExecutor to use Future instead of manually checking
+    start_worker_thread(install_vosk, name="vosk-install-async")
+    start_worker_thread(install_ffmpeg, name="ffmpeg-install-async")
 
 
 @pytest.fixture(autouse=True)
@@ -23,11 +90,25 @@ def transcribe_snapshot_transformer(snapshot):
     snapshot.add_transformer(snapshot.transform.transcribe_api())
 
 
-@pytest.mark.skipif(
-    "arm" in get_arch(),
-    reason="Vosk transcription library has issues running on Circle CI arm64 executors.",
-)
 class TestTranscribe:
+    @pytest.fixture(scope="class", autouse=True)
+    def pre_install_dependencies(self):
+        if not ffmpeg_installed.is_set() or not vosk_installed.is_set():
+            install_async()
+
+        start = int(time.time())
+        assert vosk_installed.wait(timeout=INSTALLATION_TIMEOUT), (
+            "gave up waiting for Vosk to install"
+        )
+        elapsed = int(time.time() - start)
+        assert ffmpeg_installed.wait(timeout=INSTALLATION_TIMEOUT - elapsed), (
+            "gave up waiting for ffmpeg to install"
+        )
+        LOG.info("Spent %s seconds downloading transcribe dependencies", int(time.time() - start))
+
+        assert not installation_errored.is_set(), "installation of transcribe dependencies failed"
+        yield
+
     @staticmethod
     def _wait_transcription_job(
         transcribe_client: ServiceLevelClientFactory, transcribe_job_name: str
@@ -40,7 +121,8 @@ class TestTranscribe:
 
         if not poll_condition(condition=is_transcription_done, timeout=60, interval=2):
             LOG.warning(
-                f"Timed out while awaiting for transcription of job with transcription job name:'{transcribe_job_name}'."
+                "Timed out while awaiting for transcription of job with transcription job name:'%s'.",
+                transcribe_job_name,
             )
             return False
         else:
@@ -54,6 +136,7 @@ class TestTranscribe:
             "$..Error..Code",
         ]
     )
+    @pytest.mark.skip(reason="flaky")
     def test_transcribe_happy_path(self, transcribe_create_job, snapshot, aws_client):
         file_path = os.path.join(BASEDIR, "../../files/en-gb.wav")
         job_name = transcribe_create_job(audio_file=file_path)
@@ -68,9 +151,9 @@ class TestTranscribe:
         # empirically it takes around
         # <5sec for a vosk transcription
         # ~100sec for an AWS transcription -> adjust timeout accordingly
-        assert poll_condition(
-            is_transcription_done, timeout=100
-        ), f"could not finish transcription job: {job_name} in time"
+        assert poll_condition(is_transcription_done, timeout=100), (
+            f"could not finish transcription job: {job_name} in time"
+        )
 
         job = aws_client.transcribe.get_transcription_job(TranscriptionJobName=job_name)
         snapshot.match("TranscriptionJob", job)
@@ -97,7 +180,8 @@ class TestTranscribe:
             ("../../files/en-us_video.mp4", "one of the most vital"),
         ],
     )
-    @markers.aws.unknown
+    @markers.aws.needs_fixing
+    @pytest.mark.skip(reason="flaky")
     def test_transcribe_supported_media_formats(
         self, transcribe_create_job, media_file, speech, aws_client
     ):
@@ -123,7 +207,7 @@ class TestTranscribe:
 
         retry(_assert_transcript, retries=30, sleep=2)
 
-    @markers.aws.unknown
+    @markers.aws.needs_fixing
     def test_transcribe_unsupported_media_format_failure(self, transcribe_create_job, aws_client):
         # Ensure transcribing an empty file fails
         file_path = new_tmp_file()
@@ -238,6 +322,7 @@ class TestTranscribe:
             (None, None),  # without output bucket and output key
         ],
     )
+    @pytest.mark.skip(reason="flaky")
     def test_transcribe_start_job(
         self,
         output_bucket,

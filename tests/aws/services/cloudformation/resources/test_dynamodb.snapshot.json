@@ -24,7 +24,7 @@
             "ReadCapacityUnits": 5,
             "WriteCapacityUnits": 5
           },
-          "TableArn": "arn:aws:dynamodb:<region>:111111111111:table/<table-name:1>",
+          "TableArn": "arn:<partition>:dynamodb:<region>:111111111111:table/<table-name:1>",
           "TableId": "<uuid:1>",
           "TableName": "<table-name:1>",
           "TableSizeBytes": 0,
@@ -73,7 +73,7 @@
               "KeyType": "HASH"
             }
           ],
-          "LatestStreamArn": "arn:aws:dynamodb:<region>:111111111111:table/<table-name:1>/stream/<latest-stream-label:1>",
+          "LatestStreamArn": "arn:<partition>:dynamodb:<region>:111111111111:table/<table-name:1>/stream/<latest-stream-label:1>",
           "LatestStreamLabel": "<latest-stream-label:1>",
           "ProvisionedThroughput": {
             "NumberOfDecreasesToday": 0,
@@ -84,7 +84,7 @@
             "StreamEnabled": true,
             "StreamViewType": "NEW_AND_OLD_IMAGES"
           },
-          "TableArn": "arn:aws:dynamodb:<region>:111111111111:table/<table-name:1>",
+          "TableArn": "arn:<partition>:dynamodb:<region>:111111111111:table/<table-name:1>",
           "TableId": "<uuid:1>",
           "TableName": "<table-name:1>",
           "TableSizeBytes": 0,
@@ -121,7 +121,7 @@
               "KeyType": "HASH"
             }
           ],
-          "LatestStreamArn": "arn:aws:dynamodb:<region>:111111111111:table/<table-name:1>/stream/<latest-stream-label:1>",
+          "LatestStreamArn": "arn:<partition>:dynamodb:<region>:111111111111:table/<table-name:1>/stream/<latest-stream-label:1>",
           "LatestStreamLabel": "<latest-stream-label:1>",
           "ProvisionedThroughput": {
             "NumberOfDecreasesToday": 0,
@@ -132,7 +132,7 @@
             "StreamEnabled": true,
             "StreamViewType": "NEW_AND_OLD_IMAGES"
           },
-          "TableArn": "arn:aws:dynamodb:<region>:111111111111:table/<table-name:1>",
+          "TableArn": "arn:<partition>:dynamodb:<region>:111111111111:table/<table-name:1>",
           "TableId": "<uuid:1>",
           "TableName": "<table-name:1>",
           "TableSizeBytes": 0,
@@ -174,7 +174,166 @@
             "ReadCapacityUnits": 0,
             "WriteCapacityUnits": 0
           },
-          "TableArn": "arn:aws:dynamodb:<region>:111111111111:table/<table-name:1>",
+          "TableArn": "arn:<partition>:dynamodb:<region>:111111111111:table/<table-name:1>",
+          "TableId": "<uuid:1>",
+          "TableName": "<table-name:1>",
+          "TableSizeBytes": 0,
+          "TableStatus": "ACTIVE"
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      }
+    }
+  },
+  "tests/aws/services/cloudformation/resources/test_dynamodb.py::test_ttl_cdk": {
+    "recorded-date": "14-02-2024, 13:29:07",
+    "recorded-content": {
+      "table": {
+        "TimeToLiveDescription": {
+          "AttributeName": "expire_at",
+          "TimeToLiveStatus": "ENABLED"
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      }
+    }
+  },
+  "tests/aws/services/cloudformation/resources/test_dynamodb.py::test_table_with_ttl_and_sse": {
+    "recorded-date": "12-03-2024, 15:42:18",
+    "recorded-content": {
+      "table_description": {
+        "Table": {
+          "AttributeDefinitions": [
+            {
+              "AttributeName": "pk",
+              "AttributeType": "S"
+            },
+            {
+              "AttributeName": "sk",
+              "AttributeType": "S"
+            }
+          ],
+          "CreationDateTime": "datetime",
+          "DeletionProtectionEnabled": false,
+          "ItemCount": 0,
+          "KeySchema": [
+            {
+              "AttributeName": "pk",
+              "KeyType": "HASH"
+            },
+            {
+              "AttributeName": "sk",
+              "KeyType": "RANGE"
+            }
+          ],
+          "ProvisionedThroughput": {
+            "NumberOfDecreasesToday": 0,
+            "ReadCapacityUnits": 1,
+            "WriteCapacityUnits": 1
+          },
+          "SSEDescription": {
+            "KMSMasterKeyArn": "<kms-arn:1>",
+            "SSEType": "KMS",
+            "Status": "ENABLED"
+          },
+          "TableArn": "arn:<partition>:dynamodb:<region>:111111111111:table/<table-name:1>",
+          "TableId": "<uuid:1>",
+          "TableName": "<table-name:1>",
+          "TableSizeBytes": 0,
+          "TableStatus": "ACTIVE"
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      }
+    }
+  },
+  "tests/aws/services/cloudformation/resources/test_dynamodb.py::test_global_table_with_ttl_and_sse": {
+    "recorded-date": "12-03-2024, 15:44:36",
+    "recorded-content": {
+      "table_description": {
+        "Table": {
+          "AttributeDefinitions": [
+            {
+              "AttributeName": "gsi1pk",
+              "AttributeType": "S"
+            },
+            {
+              "AttributeName": "gsi1sk",
+              "AttributeType": "S"
+            },
+            {
+              "AttributeName": "pk",
+              "AttributeType": "S"
+            },
+            {
+              "AttributeName": "sk",
+              "AttributeType": "S"
+            }
+          ],
+          "BillingModeSummary": {
+            "BillingMode": "PAY_PER_REQUEST",
+            "LastUpdateToPayPerRequestDateTime": "datetime"
+          },
+          "CreationDateTime": "datetime",
+          "DeletionProtectionEnabled": false,
+          "GlobalSecondaryIndexes": [
+            {
+              "IndexArn": "arn:<partition>:dynamodb:<region>:111111111111:table/<table-name:1>/index/GSI1",
+              "IndexName": "GSI1",
+              "IndexSizeBytes": 0,
+              "IndexStatus": "ACTIVE",
+              "ItemCount": 0,
+              "KeySchema": [
+                {
+                  "AttributeName": "gsi1pk",
+                  "KeyType": "HASH"
+                },
+                {
+                  "AttributeName": "gsi1sk",
+                  "KeyType": "RANGE"
+                }
+              ],
+              "Projection": {
+                "ProjectionType": "ALL"
+              },
+              "ProvisionedThroughput": {
+                "NumberOfDecreasesToday": 0,
+                "ReadCapacityUnits": 0,
+                "WriteCapacityUnits": 0
+              }
+            }
+          ],
+          "ItemCount": 0,
+          "KeySchema": [
+            {
+              "AttributeName": "pk",
+              "KeyType": "HASH"
+            },
+            {
+              "AttributeName": "sk",
+              "KeyType": "RANGE"
+            }
+          ],
+          "ProvisionedThroughput": {
+            "NumberOfDecreasesToday": 0,
+            "ReadCapacityUnits": 0,
+            "WriteCapacityUnits": 0
+          },
+          "SSEDescription": {
+            "KMSMasterKeyArn": "<kms-arn:1>",
+            "SSEType": "KMS",
+            "Status": "ENABLED"
+          },
+          "TableArn": "arn:<partition>:dynamodb:<region>:111111111111:table/<table-name:1>",
+          "TableClassSummary": {
+            "TableClass": "STANDARD"
+          },
           "TableId": "<uuid:1>",
           "TableName": "<table-name:1>",
           "TableSizeBytes": 0,

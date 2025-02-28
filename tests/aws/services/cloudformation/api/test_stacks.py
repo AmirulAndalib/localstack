@@ -1,16 +1,19 @@
 import json
 import os
+from collections import OrderedDict
+from itertools import permutations
 
 import botocore.exceptions
 import pytest
 import yaml
 from botocore.exceptions import WaiterError
+from localstack_snapshot.snapshots.transformer import SortingTransformer
 
 from localstack.aws.api.cloudformation import Capability
+from localstack.services.cloudformation.engine.entities import StackIdentifier
 from localstack.services.cloudformation.engine.yaml_parser import parse_yaml
 from localstack.testing.aws.util import is_aws_cloud
 from localstack.testing.pytest import markers
-from localstack.testing.snapshots.transformer import SortingTransformer
 from localstack.utils.files import load_file
 from localstack.utils.strings import short_uid
 from localstack.utils.sync import retry, wait_until
@@ -104,7 +107,35 @@ class TestStacksApi:
 
     @markers.aws.validated
     @pytest.mark.parametrize("fileformat", ["yaml", "json"])
-    def test_get_template(self, deploy_cfn_template, snapshot, fileformat, aws_client):
+    def test_get_template_using_create_stack(self, snapshot, fileformat, aws_client):
+        snapshot.add_transformer(snapshot.transform.cloudformation_api())
+
+        stack_name = f"stack-{short_uid()}"
+        aws_client.cloudformation.create_stack(
+            StackName=stack_name,
+            TemplateBody=load_file(
+                os.path.join(
+                    os.path.dirname(__file__), f"../../../templates/sns_topic_template.{fileformat}"
+                )
+            ),
+        )
+        aws_client.cloudformation.get_waiter("stack_create_complete").wait(StackName=stack_name)
+
+        template_original = aws_client.cloudformation.get_template(
+            StackName=stack_name, TemplateStage="Original"
+        )
+        snapshot.match("template_original", template_original)
+
+        template_processed = aws_client.cloudformation.get_template(
+            StackName=stack_name, TemplateStage="Processed"
+        )
+        snapshot.match("template_processed", template_processed)
+
+    @markers.aws.validated
+    @pytest.mark.parametrize("fileformat", ["yaml", "json"])
+    def test_get_template_using_changesets(
+        self, deploy_cfn_template, snapshot, fileformat, aws_client
+    ):
         snapshot.add_transformer(snapshot.transform.cloudformation_api())
 
         stack = deploy_cfn_template(
@@ -112,11 +143,6 @@ class TestStacksApi:
                 os.path.dirname(__file__), f"../../../templates/sns_topic_template.{fileformat}"
             )
         )
-        topic_name = stack.outputs["TopicName"]
-        snapshot.add_transformer(snapshot.transform.regex(topic_name, "<topic-name>"), priority=-1)
-
-        describe_stacks = aws_client.cloudformation.describe_stacks(StackName=stack.stack_id)
-        snapshot.match("describe_stacks", describe_stacks)
 
         template_original = aws_client.cloudformation.get_template(
             StackName=stack.stack_id, TemplateStage="Original"
@@ -198,7 +224,7 @@ class TestStacksApi:
         ]
         resources_before = len(resources)
         assert resources_before == 3
-        statuses = set([res["ResourceStatus"] for res in resources])
+        statuses = {res["ResourceStatus"] for res in resources}
         assert statuses == {"CREATE_COMPLETE"}
 
         # remove one resource from the template, then update stack (via change set)
@@ -218,13 +244,15 @@ class TestStacksApi:
             "StackResourceSummaries"
         ]
         assert len(resources) == resources_before - 1
-        statuses = set([res["ResourceStatus"] for res in resources])
+        statuses = {res["ResourceStatus"] for res in resources}
         assert statuses == {"UPDATE_COMPLETE"}
 
-    @markers.aws.needs_fixing
-    def test_update_stack_with_same_template_withoutchange(self, deploy_cfn_template, aws_client):
+    @markers.aws.validated
+    def test_update_stack_with_same_template_withoutchange(
+        self, deploy_cfn_template, aws_client, snapshot
+    ):
         template = load_file(
-            os.path.join(os.path.dirname(__file__), "../../../templates/fifo_queue.json")
+            os.path.join(os.path.dirname(__file__), "../../../templates/simple_no_change.yaml")
         )
         stack = deploy_cfn_template(template=template)
 
@@ -236,9 +264,29 @@ class TestStacksApi:
                 StackName=stack.stack_name
             )
 
-        error_message = str(ctx.value)
-        assert "UpdateStack" in error_message
-        assert "No updates are to be performed." in error_message
+        snapshot.match("no_change_exception", ctx.value.response)
+
+    @markers.aws.validated
+    def test_update_stack_with_same_template_withoutchange_transformation(
+        self, deploy_cfn_template, aws_client
+    ):
+        template = load_file(
+            os.path.join(
+                os.path.dirname(__file__),
+                "../../../templates/simple_no_change_with_transformation.yaml",
+            )
+        )
+        stack = deploy_cfn_template(template=template)
+
+        # transformations will always work even if there's no change in the template!
+        aws_client.cloudformation.update_stack(
+            StackName=stack.stack_name,
+            TemplateBody=template,
+            Capabilities=["CAPABILITY_AUTO_EXPAND"],
+        )
+        aws_client.cloudformation.get_waiter("stack_update_complete").wait(
+            StackName=stack.stack_name
+        )
 
     @markers.aws.validated
     def test_update_stack_actual_update(self, deploy_cfn_template, aws_client):
@@ -323,66 +371,85 @@ class TestStacksApi:
 
         aws_client.cloudformation.delete_stack(StackName=stack_name)
 
-    # TODO finish this test
-    @pytest.mark.skip(reason="disable rollback not enabled")
-    # @markers.aws.validated
+    @markers.aws.validated
+    @pytest.mark.skipif(reason="disable rollback not enabled", condition=not is_aws_cloud())
     @pytest.mark.parametrize("rollback_disabled, length_expected", [(False, 2), (True, 1)])
-    @markers.aws.unknown
-    def test_failure_options_for_stack_update(self, rollback_disabled, length_expected, aws_client):
+    def test_failure_options_for_stack_update(
+        self, rollback_disabled, length_expected, aws_client, cleanups
+    ):
         stack_name = f"stack-{short_uid()}"
+        template = open(
+            os.path.join(
+                os.path.dirname(__file__), "../../../templates/multiple_bucket_update.yaml"
+            ),
+            "r",
+        ).read()
 
         aws_client.cloudformation.create_stack(
             StackName=stack_name,
-            TemplateBody=open(
-                os.path.join(
-                    os.path.dirname(__file__), "../../../templates/multiple_kms_keys.yaml"
-                ),
-                "r",
-            ).read(),
-            Parameters=[
-                {"ParameterKey": "Usage", "ParameterValue": "SYMMETRIC_DEFAULT"},
-            ],
+            TemplateBody=template,
         )
+        cleanups.append(lambda: aws_client.cloudformation.delete_stack(StackName=stack_name))
 
-        assert wait_until(
-            lambda _: stack_process_is_finished(aws_client.cloudformation, stack_name),
-        )
+        def _assert_stack_process_finished():
+            return stack_process_is_finished(aws_client.cloudformation, stack_name)
+
+        assert wait_until(_assert_stack_process_finished)
         resources = aws_client.cloudformation.describe_stack_resources(StackName=stack_name)[
             "StackResources"
         ]
         created_resources = [
             resource for resource in resources if "CREATE_COMPLETE" in resource["ResourceStatus"]
         ]
-        print(created_resources)
+        assert len(created_resources) == 2
 
         aws_client.cloudformation.update_stack(
             StackName=stack_name,
-            TemplateBody=open(
-                os.path.join(
-                    os.path.dirname(__file__), "../../../templates/multiple_kms_keys.yaml"
-                ),
-                "r",
-            ).read(),
+            TemplateBody=template,
             DisableRollback=rollback_disabled,
             Parameters=[
-                {"ParameterKey": "Usage", "ParameterValue": "Incorrect Value"},
+                {"ParameterKey": "Days", "ParameterValue": "-1"},
             ],
         )
 
-        assert wait_until(
-            lambda _: stack_process_is_finished(aws_client.cloudformation, stack_name)
-        )
+        assert wait_until(_assert_stack_process_finished)
 
         resources = aws_client.cloudformation.describe_stack_resources(StackName=stack_name)[
             "StackResources"
         ]
-        created_resources = [
-            resource for resource in resources if "CREATE_COMPLETE" in resource["ResourceStatus"]
+        updated_resources = [
+            resource
+            for resource in resources
+            if resource["ResourceStatus"] in ["CREATE_COMPLETE", "UPDATE_COMPLETE"]
         ]
-        print(created_resources)
-        # assert len(created_resources) == length_expected
+        assert len(updated_resources) == length_expected
 
-        aws_client.cloudformation.delete_stack(StackName=stack_name)
+    @markers.aws.only_localstack
+    def test_create_stack_with_custom_id(
+        self, aws_client, cleanups, account_id, region_name, set_resource_custom_id
+    ):
+        stack_name = f"stack-{short_uid()}"
+        custom_id = short_uid()
+
+        set_resource_custom_id(
+            StackIdentifier(account_id, region_name, stack_name), custom_id=custom_id
+        )
+        template = open(
+            os.path.join(os.path.dirname(__file__), "../../../templates/sns_topic_simple.yaml"),
+            "r",
+        ).read()
+
+        stack = aws_client.cloudformation.create_stack(
+            StackName=stack_name,
+            TemplateBody=template,
+        )
+        cleanups.append(lambda: aws_client.cloudformation.delete_stack(StackName=stack_name))
+
+        assert stack["StackId"].split("/")[-1] == custom_id
+
+        # We need to wait until the stack is created otherwise we can end up in a scenario
+        # where we try to delete the stack before creating its resources, failing the test
+        aws_client.cloudformation.get_waiter("stack_create_complete").wait(StackName=stack_name)
 
 
 def stack_process_is_finished(cfn_client, stack_name):
@@ -579,7 +646,7 @@ def test_events_resource_types(deploy_cfn_template, snapshot, aws_client):
         "StackEvents"
     ]
 
-    resource_types = list(set([event["ResourceType"] for event in events]))
+    resource_types = list({event["ResourceType"] for event in events})
     resource_types.sort()
     snapshot.match("resource_types", resource_types)
 
@@ -709,6 +776,11 @@ def test_name_conflicts(aws_client, snapshot, cleanups):
         aws_client.cloudformation.describe_stacks(StackName=stack_name)
     snapshot.match("deleted_stack_not_found_exc", e.value.response)
 
+    # describe events with name fails
+    with pytest.raises(aws_client.cloudformation.exceptions.ClientError) as e:
+        aws_client.cloudformation.describe_stack_events(StackName=stack_name)
+    snapshot.match("deleted_stack_events_not_found_by_name", e.value.response)
+
     # describe with stack id (ARN) succeeds
     deleted_stack_desc = aws_client.cloudformation.describe_stacks(StackName=stack_id)
     snapshot.match("deleted_stack_desc", deleted_stack_desc)
@@ -733,3 +805,267 @@ def test_name_conflicts(aws_client, snapshot, cleanups):
     new_stack_id_desc = aws_client.cloudformation.describe_stacks(StackName=new_stack_id)
     snapshot.match("stack_id_desc", stack_id_desc)
     snapshot.match("new_stack_id_desc", new_stack_id_desc)
+
+    # check if the describing the stack events return the right stack
+    stack_events = aws_client.cloudformation.describe_stack_events(StackName=stack_name)[
+        "StackEvents"
+    ]
+    assert all(stack_event["StackId"] == new_stack_id for stack_event in stack_events)
+    # describing events by the old stack id should still yield the old events
+    stack_events = aws_client.cloudformation.describe_stack_events(StackName=stack_id)[
+        "StackEvents"
+    ]
+    assert all(stack_event["StackId"] == stack_id for stack_event in stack_events)
+
+    # deleting the stack by name should delete the new, not already deleted stack
+    aws_client.cloudformation.delete_stack(StackName=stack_name)
+    aws_client.cloudformation.get_waiter("stack_delete_complete").wait(StackName=stack_name)
+    # describe with stack id returns stack deleted
+    deleted_stack_desc = aws_client.cloudformation.describe_stacks(StackName=new_stack_id)
+    snapshot.match("deleted_second_stack_desc", deleted_stack_desc)
+
+
+@markers.aws.validated
+def test_describe_stack_events_errors(aws_client, snapshot):
+    with pytest.raises(aws_client.cloudformation.exceptions.ClientError) as e:
+        aws_client.cloudformation.describe_stack_events()
+    snapshot.match("describe_stack_events_no_stack_name", e.value.response)
+    with pytest.raises(aws_client.cloudformation.exceptions.ClientError) as e:
+        aws_client.cloudformation.describe_stack_events(StackName="does-not-exist")
+    snapshot.match("describe_stack_events_stack_not_found", e.value.response)
+
+
+TEMPLATE_ORDER_CASES = list(permutations(["A", "B", "C"]))
+
+
+@markers.aws.validated
+@markers.snapshot.skip_snapshot_verify(
+    paths=[
+        "$..StackId",
+        # TODO
+        "$..PhysicalResourceId",
+        # TODO
+        "$..ResourceProperties",
+    ]
+)
+@pytest.mark.parametrize(
+    "deploy_order", TEMPLATE_ORDER_CASES, ids=["-".join(vals) for vals in TEMPLATE_ORDER_CASES]
+)
+def test_stack_deploy_order(deploy_cfn_template, aws_client, snapshot, deploy_order: tuple[str]):
+    snapshot.add_transformer(snapshot.transform.cloudformation_api())
+    snapshot.add_transformer(snapshot.transform.key_value("EventId"))
+    resources = {
+        "A": {
+            "Type": "AWS::SSM::Parameter",
+            "Properties": {
+                "Type": "String",
+                "Value": "root",
+            },
+        },
+        "B": {
+            "Type": "AWS::SSM::Parameter",
+            "Properties": {
+                "Type": "String",
+                "Value": {
+                    "Ref": "A",
+                },
+            },
+        },
+        "C": {
+            "Type": "AWS::SSM::Parameter",
+            "Properties": {
+                "Type": "String",
+                "Value": {
+                    "Ref": "B",
+                },
+            },
+        },
+    }
+
+    resources = OrderedDict(
+        [
+            (logical_resource_id, resources[logical_resource_id])
+            for logical_resource_id in deploy_order
+        ]
+    )
+    assert len(resources) == 3
+
+    stack = deploy_cfn_template(
+        template=json.dumps(
+            {
+                "Resources": resources,
+            }
+        )
+    )
+
+    stack.destroy()
+
+    events = aws_client.cloudformation.describe_stack_events(
+        StackName=stack.stack_id,
+    )["StackEvents"]
+
+    filtered_events = []
+    for event in events:
+        # only the resources we care about
+        if event["LogicalResourceId"] not in deploy_order:
+            continue
+
+        # only _COMPLETE events
+        if not event["ResourceStatus"].endswith("_COMPLETE"):
+            continue
+
+        filtered_events.append(event)
+
+    # sort by event time
+    filtered_events.sort(key=lambda e: e["Timestamp"])
+
+    snapshot.match("events", filtered_events)
+
+
+@markers.snapshot.skip_snapshot_verify(
+    paths=[
+        # TODO: this property is present in the response from LocalStack when
+        # there is an active changeset, however it is not present on AWS
+        # because the change set has not been executed.
+        "$..Stacks..ChangeSetId",
+        # FIXME: tackle this when fixing API parity of CloudFormation
+        "$..Capabilities",
+        "$..IncludeNestedStacks",
+        "$..LastUpdatedTime",
+        "$..NotificationARNs",
+        "$..ResourceChange",
+        "$..StackResourceDetail.Metadata",
+    ]
+)
+@markers.aws.validated
+def test_no_echo_parameter(snapshot, aws_client, deploy_cfn_template):
+    snapshot.add_transformer(snapshot.transform.cloudformation_api())
+    snapshot.add_transformer(SortingTransformer("Parameters", lambda x: x.get("ParameterKey", "")))
+
+    template_path = os.path.join(os.path.dirname(__file__), "../../../templates/cfn_no_echo.yml")
+    template = open(template_path, "r").read()
+
+    deployment = deploy_cfn_template(
+        template=template,
+        parameters={"SecretParameter": "SecretValue"},
+    )
+    stack_id = deployment.stack_id
+    stack_name = deployment.stack_name
+
+    describe_stacks = aws_client.cloudformation.describe_stacks(StackName=stack_id)
+    snapshot.match("describe_stacks", describe_stacks)
+
+    # Check Resource Metadata.
+    describe_stack_resources = aws_client.cloudformation.describe_stack_resources(
+        StackName=stack_id
+    )
+    for resource in describe_stack_resources["StackResources"]:
+        resource_logical_id = resource["LogicalResourceId"]
+
+        # Get detailed information about the resource
+        describe_stack_resource_details = aws_client.cloudformation.describe_stack_resource(
+            StackName=stack_name, LogicalResourceId=resource_logical_id
+        )
+        snapshot.match(
+            f"describe_stack_resource_details_{resource_logical_id}",
+            describe_stack_resource_details,
+        )
+
+    # Update stack via update_stack (and change the value of SecretParameter)
+    aws_client.cloudformation.update_stack(
+        StackName=stack_name,
+        TemplateBody=template,
+        Parameters=[
+            {"ParameterKey": "SecretParameter", "ParameterValue": "NewSecretValue1"},
+        ],
+    )
+    aws_client.cloudformation.get_waiter("stack_update_complete").wait(StackName=stack_name)
+    update_stacks = aws_client.cloudformation.describe_stacks(StackName=stack_id)
+    snapshot.match("describe_updated_stacks", update_stacks)
+
+    # Update stack via create_change_set (and change the value of SecretParameter)
+    change_set_name = f"UpdateSecretParameterValue-{short_uid()}"
+    aws_client.cloudformation.create_change_set(
+        StackName=stack_name,
+        TemplateBody=template,
+        ChangeSetName=change_set_name,
+        Parameters=[
+            {"ParameterKey": "SecretParameter", "ParameterValue": "NewSecretValue2"},
+        ],
+    )
+    aws_client.cloudformation.get_waiter("change_set_create_complete").wait(
+        StackName=stack_name,
+        ChangeSetName=change_set_name,
+    )
+    change_sets = aws_client.cloudformation.describe_change_set(
+        StackName=stack_id,
+        ChangeSetName=change_set_name,
+    )
+    snapshot.match("describe_updated_change_set", change_sets)
+    describe_stacks = aws_client.cloudformation.describe_stacks(StackName=stack_id)
+    snapshot.match("describe_updated_stacks_change_set", describe_stacks)
+
+    # Change `NoEcho` of a parameter from true to false and update stack via create_change_set.
+    change_set_name = f"UpdateSecretParameterNoEchoToFalse-{short_uid()}"
+    template_dict = parse_yaml(load_file(template_path))
+    template_dict["Parameters"]["SecretParameter"]["NoEcho"] = False
+    template_no_echo_false = yaml.dump(template_dict)
+    aws_client.cloudformation.create_change_set(
+        StackName=stack_name,
+        TemplateBody=template_no_echo_false,
+        ChangeSetName=change_set_name,
+        Parameters=[
+            {"ParameterKey": "SecretParameter", "ParameterValue": "NewSecretValue2"},
+        ],
+    )
+    aws_client.cloudformation.get_waiter("change_set_create_complete").wait(
+        StackName=stack_name,
+        ChangeSetName=change_set_name,
+    )
+    change_sets = aws_client.cloudformation.describe_change_set(
+        StackName=stack_id,
+        ChangeSetName=change_set_name,
+    )
+    snapshot.match("describe_updated_change_set_no_echo_true", change_sets)
+    describe_stacks = aws_client.cloudformation.describe_stacks(StackName=stack_id)
+    snapshot.match("describe_updated_stacks_no_echo_true", describe_stacks)
+
+    # Change `NoEcho` of a parameter back from false to true and update stack via create_change_set.
+    change_set_name = f"UpdateSecretParameterNoEchoToTrue-{short_uid()}"
+    aws_client.cloudformation.create_change_set(
+        StackName=stack_name,
+        TemplateBody=template,
+        ChangeSetName=change_set_name,
+        Parameters=[
+            {"ParameterKey": "SecretParameter", "ParameterValue": "NewSecretValue2"},
+        ],
+    )
+    aws_client.cloudformation.get_waiter("change_set_create_complete").wait(
+        StackName=stack_name,
+        ChangeSetName=change_set_name,
+    )
+    change_sets = aws_client.cloudformation.describe_change_set(
+        StackName=stack_id,
+        ChangeSetName=change_set_name,
+    )
+    snapshot.match("describe_updated_change_set_no_echo_false", change_sets)
+    describe_stacks = aws_client.cloudformation.describe_stacks(StackName=stack_id)
+    snapshot.match("describe_updated_stacks_no_echo_false", describe_stacks)
+
+
+@markers.aws.validated
+def test_stack_resource_not_found(deploy_cfn_template, aws_client, snapshot):
+    stack = deploy_cfn_template(
+        template_path=os.path.join(
+            os.path.dirname(__file__), "../../../templates/sns_topic_simple.yaml"
+        ),
+        parameters={"TopicName": f"topic{short_uid()}"},
+    )
+
+    with pytest.raises(botocore.exceptions.ClientError) as ex:
+        aws_client.cloudformation.describe_stack_resource(
+            StackName=stack.stack_name, LogicalResourceId="NonExistentResource"
+        )
+
+    snapshot.add_transformer(snapshot.transform.regex(stack.stack_name, "<stack-name>"))
+    snapshot.match("Error", ex.value.response)
