@@ -8,7 +8,7 @@ build==1.2.2.post1
     # via localstack-core (pyproject.toml)
 cachetools==6.1.0
     # via localstack-core (pyproject.toml)
-certifi==2025.7.14
+certifi==2026.10.19
     # via requests
 cffi==1.17.1
     # via cryptography
@@ -16,7 +16,7 @@ charset-normalizer==3.4.2
     # via requests
 click==8.2.1
     # via localstack-core (pyproject.toml)
-cryptography==45.0.5
+cryptography==50.0.0
     # via localstack-core (pyproject.toml)
 dill==0.3.6
     # via localstack-core (pyproject.toml)
@@ -24,7 +24,7 @@ dnslib==0.9.26
     # via localstack-core (pyproject.toml)
 dnspython==2.7.0
     # via localstack-core (pyproject.toml)
-idna==3.10
+idna==3.15
     # via requests
 markdown-it-py==3.0.0
     # via rich
@@ -38,15 +38,15 @@ psutil==7.0.0
     # via localstack-core (pyproject.toml)
 pycparser==2.22
     # via cffi
-pygments==2.19.2
+pygments==2.20.0
     # via rich
 pyproject-hooks==1.2.0
     # via build
-python-dotenv==1.1.1
+python-dotenv==1.2.2
     # via localstack-core (pyproject.toml)
 pyyaml==6.0.2
     # via localstack-core (pyproject.toml)
-requests==2.32.4
+requests==2.33.0
     # via localstack-core (pyproject.toml)
 rich==14.0.0
     # via localstack-core (pyproject.toml)
@@ -54,5 +54,5 @@ semver==3.0.4
     # via localstack-core (pyproject.toml)
 tailer==0.4.1
     # via localstack-core (pyproject.toml)
-urllib3==2.5.0
+urllib3==2.8.0
     # via requests
